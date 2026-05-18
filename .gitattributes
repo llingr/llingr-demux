@@ -1,0 +1,2 @@
+# Exclude generated files from GitHub language statistics
+benchmarks/*.html linguist-generated

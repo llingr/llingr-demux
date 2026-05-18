@@ -1,0 +1,5 @@
+# send_commits.go:77-80 - Map access is mutex-protected
+# The commits slice is built by iterating PartitionMap (lines 52-70) while holding oc.mu.
+# The same entries are accessed at lines 76-81 while mutex is still held.
+# Nilaway cannot reason about mutex synchronization, so this is a false positive.
+demux/offset/send_commits.go
