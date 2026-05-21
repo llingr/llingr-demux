@@ -77,26 +77,27 @@ func newTestCoordinator(
 
 func TestNewDrainCoordinator(t *testing.T) {
 	cfg := config.DemuxConfig{DrainTimeout: 5 * time.Second}
+	logger := mocklogger.NewNoOpLogger()
 
-	// Can't easily test with real types without importing them,
-	// but we can verify the constructor exists and accepts the right params
-	// by checking the Coordinator struct is properly configured via interfaces.
+	// The constructor accepts concrete pointer types but never dereferences them,
+	// so nil is safe here - we just want to exercise the wiring
+	coord := NewDrainCoordinator[string](
+		context.Background(),
+		nil,
+		nil,
+		nil,
+		cfg,
+		logger,
+	)
 
-	drainer := &mockWorkerDrainer{}
-	committer := &mockOffsetDrainer{}
-	shutdown := &mockEmergencyShutdown{}
-
-	coord := &Coordinator[string]{
-		ctx:            context.Background(),
-		demux:          drainer,
-		committer:      committer,
-		circuitBreaker: shutdown,
-		drainTimeout:   cfg.DrainTimeout,
-		logger:         mocklogger.NewNoOpLogger(),
+	if coord == nil {
+		t.Fatal("NewDrainCoordinator returned nil")
 	}
-
 	if coord.drainTimeout != 5*time.Second {
 		t.Errorf("drainTimeout = %v, want 5s", coord.drainTimeout)
+	}
+	if coord.logger == nil {
+		t.Error("logger should be set")
 	}
 }
 

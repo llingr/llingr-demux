@@ -67,6 +67,14 @@ func TestNewWorkerShard(t *testing.T) {
 	if shard.borrowWorker == nil {
 		t.Error("expected non-nil borrowWorker func")
 	}
+	if shard.pooledCount == nil {
+		t.Error("expected non-nil pooledCount func")
+	}
+	// pooledCount returns the count of idle workers in the pool - must
+	// be non-negative and bounded by the pool capacity (guard + overflow)
+	if got := shard.pooledCount(); got < 0 || got > 15 {
+		t.Errorf("pooledCount() = %d, want in [0, 15]", got)
+	}
 	if shard.done.Load() {
 		t.Error("expected done to be false initially")
 	}

@@ -140,6 +140,75 @@ func TestWithMetricsSink(t *testing.T) {
 	}
 }
 
+func TestWithBandwidthMetricsSink(t *testing.T) {
+	builder := NewBuilder[string]("test-topic", noopProcess, noopDeadLetter)
+	sinkCalled := false
+
+	sink := func(_ string, _ nexus.BandwidthMetrics) error {
+		sinkCalled = true
+		return nil
+	}
+
+	result := builder.WithBandwidthMetricsSink(sink)
+
+	if result != builder {
+		t.Error("WithBandwidthMetricsSink should return same builder for chaining")
+	}
+	if builder.bandwidthMetricsSink == nil {
+		t.Error("bandwidthMetricsSink not set")
+	}
+	_ = builder.bandwidthMetricsSink("test-topic", nexus.BandwidthMetrics{})
+	if !sinkCalled {
+		t.Error("bandwidthMetricsSink is not the function we passed")
+	}
+}
+
+func TestWithBandwidthFlushInterval(t *testing.T) {
+	builder := NewBuilder[string]("test-topic", noopProcess, noopDeadLetter)
+
+	result := builder.WithBandwidthFlushInterval(30 * time.Second)
+
+	if result != builder {
+		t.Error("WithBandwidthFlushInterval should return same builder for chaining")
+	}
+	if builder.bandwidthFlushInterval != 30*time.Second {
+		t.Errorf("bandwidthFlushInterval = %v, want 30s", builder.bandwidthFlushInterval)
+	}
+}
+
+func TestWithApplicationName(t *testing.T) {
+	builder := NewBuilder[string]("test-topic", noopProcess, noopDeadLetter)
+
+	result := builder.WithApplicationName("orders-service")
+
+	if result != builder {
+		t.Error("WithApplicationName should return same builder for chaining")
+	}
+	if builder.applicationName != "orders-service" {
+		t.Errorf("applicationName = %q, want %q", builder.applicationName, "orders-service")
+	}
+}
+
+func TestWithTeam(t *testing.T) {
+	builder := NewBuilder[string]("test-topic", noopProcess, noopDeadLetter)
+
+	team := nexus.Team{Name: "payments", Department: "finance"}
+	result := builder.WithTeam(team)
+
+	if result != builder {
+		t.Error("WithTeam should return same builder for chaining")
+	}
+	if builder.team == nil {
+		t.Fatal("team should be set")
+	}
+	if builder.team.Name != "payments" {
+		t.Errorf("team.Name = %q, want %q", builder.team.Name, "payments")
+	}
+	if builder.team.Department != "finance" {
+		t.Errorf("team.Department = %q, want %q", builder.team.Department, "finance")
+	}
+}
+
 func TestWithLogger(t *testing.T) {
 	builder := NewBuilder[string]("test-topic", noopProcess, noopDeadLetter)
 	logger := mocklogger.NewNoOpLogger()
@@ -358,6 +427,98 @@ func TestBuildWithAllOptions(t *testing.T) {
 	// broker's ExtractEnvelope should NOT have been called (we provided custom)
 	if broker.extractEnvelopeCalled {
 		t.Error("broker's ExtractEnvelope should not be called when custom is provided")
+	}
+}
+
+// builderBandwidthBroker implements both BrokerPort[string] and BandwidthPort[string]
+// for testing the bandwidth-aggregator wiring path in Build
+type builderBandwidthBroker struct {
+	builderTestBroker
+	callbackSet bool
+}
+
+func (m *builderBandwidthBroker) SetBandwidthCallback(_ nexus.BandwidthCallback) {
+	m.callbackSet = true
+}
+func (m *builderBandwidthBroker) StatsInterval() time.Duration { return 5 * time.Second }
+
+func TestBuild_BandwidthSink_AdapterImplementsBandwidthPort(t *testing.T) {
+	logger := mocklogger.NewRecordingLogger()
+
+	builder := NewBuilder[string]("test-topic", noopProcess, noopDeadLetter).
+		WithLogger(logger).
+		WithBandwidthMetricsSink(func(_ string, _ nexus.BandwidthMetrics) error { return nil }).
+		WithBandwidthFlushInterval(2 * time.Second).
+		WithTeam(nexus.Team{Name: "test-team"})
+
+	broker := &builderBandwidthBroker{}
+	consumer := builder.Build(broker)
+	c := consumer.(*Consumer[string]) //nolint:forcetypeassert // test: known type from builder
+
+	if c.bandwidthAggregator == nil {
+		t.Error("expected bandwidth aggregator to be wired when broker implements BandwidthPort")
+	}
+	if !broker.callbackSet {
+		t.Error("expected SetBandwidthCallback to be called on the BandwidthPort adapter")
+	}
+	if logger.ContainsWarning("does not implement BandwidthPort") {
+		t.Error("warn log should not fire when broker implements BandwidthPort")
+	}
+}
+
+func TestBuild_BandwidthSink_AdapterDoesNotImplementBandwidthPort(t *testing.T) {
+	logger := mocklogger.NewRecordingLogger()
+
+	builder := NewBuilder[string]("test-topic", noopProcess, noopDeadLetter).
+		WithLogger(logger).
+		WithBandwidthMetricsSink(func(_ string, _ nexus.BandwidthMetrics) error { return nil })
+
+	// builderTestBroker does NOT implement BandwidthPort
+	broker := &builderTestBroker{}
+	consumer := builder.Build(broker)
+	c := consumer.(*Consumer[string]) //nolint:forcetypeassert // test: known type from builder
+
+	if c.bandwidthAggregator != nil {
+		t.Error("expected nil aggregator when adapter does not implement BandwidthPort")
+	}
+	if !logger.ContainsWarning("does not implement BandwidthPort") {
+		t.Error("expected warn log when adapter does not implement BandwidthPort")
+	}
+}
+
+func TestBuild_TakeSnapshot_ConcurrencyClosure(t *testing.T) {
+	tests := []struct {
+		name             string
+		overflowCap      int
+		wantOverflowCap  int
+	}{
+		{name: "with overflow guard", overflowCap: 7, wantOverflowCap: 7},
+		{name: "without overflow guard", overflowCap: 0, wantOverflowCap: 0},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			builder := NewBuilder[string]("test-topic", noopProcess, noopDeadLetter).
+				WithLogger(mocklogger.NewNoOpLogger()).
+				WithDemuxConfig(config.DemuxConfig{ConcurrentKeys: 13})
+			if tc.overflowCap > 0 {
+				builder = builder.WithOverflowGuard(make(chan struct{}, tc.overflowCap))
+			}
+
+			consumer := builder.Build(&builderTestBroker{})
+			snap := consumer.(*Consumer[string]).TakeSnapshot() //nolint:forcetypeassert // test: known type from builder
+
+			if snap.Concurrency.GuardCapacity != 13 {
+				t.Errorf("GuardCapacity = %d, want 13", snap.Concurrency.GuardCapacity)
+			}
+			if snap.Concurrency.OverflowCapacity != tc.wantOverflowCap {
+				t.Errorf("OverflowCapacity = %d, want %d",
+					snap.Concurrency.OverflowCapacity, tc.wantOverflowCap)
+			}
+			if snap.Concurrency.CommitIngestCap == 0 {
+				t.Error("CommitIngestCap should be non-zero (committer wires real channel)")
+			}
+		})
 	}
 }
 

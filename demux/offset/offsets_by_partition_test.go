@@ -248,8 +248,8 @@ func Test_clampPartitionsCount(t *testing.T) {
 	}
 }
 
-// Fuzz_clampPartitionsCount validates bounds invariants for all possible inputs
-func Fuzz_clampPartitionsCount(f *testing.F) {
+// FuzzClampPartitionsCount validates bounds invariants for all possible inputs
+func FuzzClampPartitionsCount(f *testing.F) {
 	// Seed with boundary values and typical cases
 	f.Add(0)
 	f.Add(12)

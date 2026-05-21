@@ -356,7 +356,7 @@ func Test_BorrowReturn_DifferentTypes(t *testing.T) {
 	})
 }
 
-func Fuzz_CalcWorkItemPoolSize(f *testing.F) {
+func FuzzCalcWorkItemPoolSize(f *testing.F) {
 	f.Add(1, 1)
 	f.Add(250, 16)
 	f.Add(5000, 20)

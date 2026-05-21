@@ -5,11 +5,50 @@ package snapshot
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 )
+
+// failingResponseWriter forces Encode to fail by returning an error
+// from Write - used to exercise the handler's error fallback branch
+type failingResponseWriter struct {
+	headers http.Header
+	status  int
+}
+
+func (f *failingResponseWriter) Header() http.Header {
+	if f.headers == nil {
+		f.headers = http.Header{}
+	}
+	return f.headers
+}
+
+func (f *failingResponseWriter) Write(_ []byte) (int, error) {
+	return 0, errors.New("write failed")
+}
+
+func (f *failingResponseWriter) WriteHeader(status int) {
+	f.status = status
+}
+
+func TestNewHandler_EncodeError_FallsBackToHTTPError(t *testing.T) {
+	handler := NewHandler(func() Snapshot { return Snapshot{} })
+
+	req := httptest.NewRequest(http.MethodGet, "/snapshot", nil)
+	rec := &failingResponseWriter{}
+
+	// must not panic - the Encode error path runs http.Error, which also
+	// invokes Write on our failing writer (silently dropped). We only need
+	// to confirm the handler completes and tagged InternalServerError
+	handler(rec, req)
+
+	if rec.status != http.StatusInternalServerError {
+		t.Errorf("expected status 500 on encode failure, got %d", rec.status)
+	}
+}
 
 func TestNewHandler_ReturnsJSON(t *testing.T) {
 	rebalanceTime := time.Date(2025, 6, 15, 14, 30, 0, 0, time.UTC)

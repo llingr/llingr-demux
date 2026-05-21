@@ -26,6 +26,35 @@ func TestNewPartitionOffsets(t *testing.T) {
 	}
 }
 
+// TestInit_PopulatesEmptyMap exercises the in-place initialiser used when
+// PartitionOffsets is embedded in a parent struct (rather than constructed
+// via NewPartitionOffsets). Production callers do this from pipeline.NewProcessor
+// to avoid a heap allocation - that call site is in a sibling package so it does
+// not register on this package's coverage profile
+func TestInit_PopulatesEmptyMap(t *testing.T) {
+	var p PartitionOffsets // zero value - prevOffsets is nil
+	p.Init()
+
+	if p.prevOffsets == nil {
+		t.Fatal("Init should allocate prevOffsets")
+	}
+	if len(p.prevOffsets) != 0 {
+		t.Errorf("expected empty map after Init, got %d entries", len(p.prevOffsets))
+	}
+
+	// after Init the partition tracker is usable
+	prev, isFirst, err := p.GetPrevious(0, 100)
+	if err != nil {
+		t.Errorf("GetPrevious after Init returned error: %v", err)
+	}
+	if !isFirst {
+		t.Error("first call after Init should report isFirst=true")
+	}
+	if prev != 99 {
+		t.Errorf("first call should return offset-1 (99), got %d", prev)
+	}
+}
+
 func TestGetPrevious_FirstMessage(t *testing.T) {
 	p := NewPartitionOffsets()
 
