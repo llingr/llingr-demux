@@ -84,9 +84,9 @@ func Test_OffsetsTracker_HasPendingCommits(t *testing.T) {
 	}
 }
 
-// Fuzz_OffsetsTracker_HasPendingCommits validates the invariant:
+// FuzzOffsetsTrackerHasPendingCommits validates the invariant:
 // HasPendingCommits() returns true if and only if (Ready != nil OR len(GapBuffer) > 0)
-func Fuzz_OffsetsTracker_HasPendingCommits(f *testing.F) {
+func FuzzOffsetsTrackerHasPendingCommits(f *testing.F) {
 	f.Add(false, 0)   // no pending
 	f.Add(true, 0)    // ready only
 	f.Add(false, 1)   // gap buffer only

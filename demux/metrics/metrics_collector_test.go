@@ -18,6 +18,34 @@ import (
 	"github.com/llingr/llingr-nexus/nexus"
 )
 
+// Test_Collector_Stats_ReturnsAtomicCounters verifies Stats returns a
+// snapshot of the three atomic counters
+func Test_Collector_Stats_ReturnsAtomicCounters(t *testing.T) {
+	cfg := config.DemuxConfig{}
+	ctx := context.Background()
+	logger := nexus.NewDefaultLogger(slog.LevelInfo)
+	pool := alloc.NewWorkItemsPool[string](cfg)
+
+	noopSink := func(_ nexus.SinkContext, _ nexus.Metrics) error { return nil }
+	collector := NewCollector[string](ctx, cfg, noopSink, nexus.SinkContext{}, pool, logger)
+
+	// fresh collector: all zero
+	if got := collector.Stats(); got != (Stats{}) {
+		t.Errorf("fresh Stats = %+v, want zero value", got)
+	}
+
+	// stamp the underlying counters and verify Stats reflects them
+	collector.CollectedCount.Store(42)
+	collector.DroppedCount.Store(7)
+	collector.SendFailedCount.Store(3)
+
+	got := collector.Stats()
+	want := Stats{Collected: 42, Dropped: 7, SendFailed: 3}
+	if got != want {
+		t.Errorf("Stats = %+v, want %+v", got, want)
+	}
+}
+
 // Test_CollectorHappyPath validates that metrics are
 // collected (in order)
 func Test_CollectorHappyPath(t *testing.T) {
@@ -133,9 +161,9 @@ func Test_CalculateCollectBufferSize(t *testing.T) {
 	}
 }
 
-// Fuzz_CalculateCollectBufferSize verifies that for any inputs, the buffer
+// FuzzCalculateCollectBufferSize verifies that for any inputs, the buffer
 // size is always within the valid range of 20000 to 100000
-func Fuzz_CalculateCollectBufferSize(f *testing.F) {
+func FuzzCalculateCollectBufferSize(f *testing.F) {
 	// Seed with interesting boundary values
 	f.Add(0, 0)
 	f.Add(1, 1)

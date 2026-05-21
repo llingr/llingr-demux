@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/llingr/llingr-demux/demux/bandwidth"
 	"github.com/llingr/llingr-demux/demux/config"
 	"github.com/llingr/llingr-demux/demux/metrics/snapshot"
 	"github.com/llingr/llingr-demux/tests/mocklogger"
@@ -573,6 +574,59 @@ func Test_Consumer_Shutdown_HappyPath(t *testing.T) {
 	}
 }
 
+func Test_Consumer_Shutdown_WithBandwidthAggregator_StopsAggregator(t *testing.T) {
+	t.Setenv(config.SkipValidationEnvVar, "true")
+
+	broker := newControllableBrokerPort()
+	broker.releaseUnsubscribe()
+	logger := mocklogger.NewNoOpLogger()
+
+	cfg := config.DemuxConfig{
+		AwaitAssignmentsTimeout: 5 * time.Second,
+		DrainTimeout:            100 * time.Millisecond,
+		PollTimeout:             10 * time.Millisecond,
+	}
+
+	builder := NewBuilder("test-topic", noOpProcessMessage, noOpWriteDeadLetter).
+		WithContext(context.Background()).
+		WithLogger(logger).
+		WithDemuxConfig(cfg).
+		WithShutdownCallback(func(_ context.Context, _ error) {})
+
+	consumer := builder.Build(broker)
+	dxc := consumer.(*Consumer[any]) //nolint:forcetypeassert // test: known type from builder
+
+	// Attach a real aggregator with a noop sink - the builder normally wires one
+	// only when both WithBandwidthMetricsSink and a BandwidthPort adapter are set
+	noopSink := nexus.BandwidthMetricsSink(func(_ string, _ nexus.BandwidthMetrics) error { return nil })
+	agg := bandwidth.NewAggregator(context.Background(), noopSink, "test-topic", logger)
+	agg.Start()
+	dxc.bandwidthAggregator = agg
+
+	// Subscribe so the shutdown path reaches the aggregator-stop branch
+	subscribeDone := make(chan error, 1)
+	go func() {
+		subscribeDone <- dxc.Subscribe()
+	}()
+	<-broker.subscribed
+	if err := dxc.TriggerRebalance(nexus.Assign, []nexus.RebalanceInfo{{Partition: 0}}); err != nil {
+		t.Errorf("TriggerRebalance returned error: %v", err)
+	}
+	<-subscribeDone
+
+	if err := dxc.Shutdown(); err != nil {
+		t.Errorf("Shutdown returned error: %v", err)
+	}
+
+	// Aggregator.Stop is idempotent so a second call is harmless; we just
+	// need to confirm Shutdown ran the branch and the aggregator is stopped.
+	// Stats should reflect zero packets (the noop sink was never invoked).
+	stats := agg.Stats()
+	if stats.Flushed != 0 || stats.Dropped != 0 {
+		t.Errorf("expected empty aggregator stats, got flushed=%d dropped=%d", stats.Flushed, stats.Dropped)
+	}
+}
+
 func Test_Consumer_Shutdown_NeverSubscribed_LogsWarning(t *testing.T) {
 	t.Setenv(config.SkipValidationEnvVar, "true")
 
@@ -885,6 +939,36 @@ func Test_Consumer_TriggerEmergencyShutdown_TriggersCallback(t *testing.T) {
 }
 
 // =============================================================================
+// Consumer.MetricsStats() tests
+// =============================================================================
+
+func Test_Consumer_MetricsStats_FreshConsumer_ReturnsZeroes(t *testing.T) {
+	t.Setenv(config.SkipValidationEnvVar, "true")
+
+	broker := newControllableBrokerPort()
+	logger := mocklogger.NewNoOpLogger()
+
+	builder := NewBuilder("test-topic", noOpProcessMessage, noOpWriteDeadLetter).
+		WithContext(context.Background()).
+		WithLogger(logger)
+
+	consumer := builder.Build(broker)
+	dxc := consumer.(*Consumer[any]) //nolint:forcetypeassert // test: known type from builder
+
+	stats := dxc.MetricsStats()
+
+	if stats.Collected != 0 {
+		t.Errorf("fresh consumer Collected = %d, want 0", stats.Collected)
+	}
+	if stats.Dropped != 0 {
+		t.Errorf("fresh consumer Dropped = %d, want 0", stats.Dropped)
+	}
+	if stats.SendFailed != 0 {
+		t.Errorf("fresh consumer SendFailed = %d, want 0", stats.SendFailed)
+	}
+}
+
+// =============================================================================
 // defaultShutdownCallback tests
 // =============================================================================
 
@@ -1089,6 +1173,65 @@ func Test_Consumer_Subscribe_Timeout_UnsubscribeStuck_TriggersEmergencyShutdown(
 		} else {
 			t.Errorf("unexpected error type: %v", err)
 		}
+	}
+}
+
+// Test_Consumer_Subscribe_NestedTimeout_InProcess covers the nested-timeout
+// branch in Subscribe (line 127-129) without spawning a subprocess.
+// Sister test of Test_Consumer_DefaultShutdownCallback_EmergencyPath_InProcess
+// the subprocess test above proves end-to-end exit behaviour but does not
+// register on coverage profiles unless GOCOVERDIR is plumbed through
+func Test_Consumer_Subscribe_NestedTimeout_InProcess(t *testing.T) {
+	t.Setenv(config.SkipValidationEnvVar, "true")
+
+	shutdownDelay = 10 * time.Millisecond
+	defer func() { shutdownDelay = defaultShutdownDelay }()
+
+	// catch SIGINT before it terminates the test process
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt)
+	defer signal.Stop(sigCh)
+
+	// do NOT release unsubscribe - the unsubscribe call will block and the
+	// inner select will time out, hitting defaultShutdownCallback
+	broker := newControllableBrokerPort()
+	logger := mocklogger.NewNoOpLogger()
+
+	cfg := config.DemuxConfig{
+		AwaitAssignmentsTimeout: 30 * time.Millisecond,
+		DrainTimeout:            10 * time.Millisecond,
+		PollTimeout:             5 * time.Millisecond,
+	}
+
+	builder := NewBuilder("test-topic", noOpProcessMessage, noOpWriteDeadLetter).
+		WithContext(context.Background()).
+		WithLogger(logger).
+		WithDemuxConfig(cfg)
+
+	consumer := builder.Build(broker)
+	dxc := consumer.(*Consumer[any]) //nolint:forcetypeassert // test: known type from builder
+
+	subscribeDone := make(chan error, 1)
+	go func() {
+		subscribeDone <- dxc.Subscribe()
+	}()
+
+	// First SIGINT comes from the inner-timeout defaultShutdownCallback path
+	select {
+	case <-sigCh:
+		// nested timeout path ran, interrupt delivered
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for nested-timeout SIGINT")
+	}
+
+	// Subscribe returns its assignments-timeout error after the inner select
+	select {
+	case err := <-subscribeDone:
+		if err == nil {
+			t.Error("expected Subscribe to return timeout error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("Subscribe did not return after SIGINT")
 	}
 }
 

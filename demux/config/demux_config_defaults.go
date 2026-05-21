@@ -128,7 +128,7 @@ const (
 // 50 consumers subscribed to 50 partitions, the effective partition count becomes 25000,
 // and if each message takes 100ms that means throughput up to 250,000 messages per second.
 //
-//nolint:gocyclo,gocognit // each config field needs min/max validation - branches are linear and independent, not nested
+//nolint:gocyclo,gocognit // flat per-field validation manifest: same zero/min/max shape repeated, no nesting
 func (c *DemuxConfig) SetDemuxConfigDefaults() DemuxConfig {
 
 	skipValidation := isValidationSkipped()

@@ -42,9 +42,9 @@ bench:
 
 fuzz:
 	@echo "==> Running fuzz tests..."
-	go test -fuzz=Fuzz_CalculateCollectBufferSize -fuzztime=8s ./demux/metrics && \
-	go test -fuzz=Fuzz_OffsetsTracker_HasPendingCommits -fuzztime=8s ./demux/offset && \
-	go test -fuzz=Fuzz_clampPartitionsCount -fuzztime=8s ./demux/offset && \
-	go test -fuzz=Fuzz_CalcWorkItemPoolSize -fuzztime=8s ./demux/alloc
+	go test -fuzz=FuzzCalculateCollectBufferSize -fuzztime=20s ./demux/metrics && \
+	go test -fuzz=FuzzOffsetsTrackerHasPendingCommits -fuzztime=20s ./demux/offset && \
+	go test -fuzz=FuzzClampPartitionsCount -fuzztime=20s ./demux/offset && \
+	go test -fuzz=FuzzCalcWorkItemPoolSize -fuzztime=20s ./demux/alloc
 
 verify: build fuzz bench test

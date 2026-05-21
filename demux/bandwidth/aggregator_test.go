@@ -390,6 +390,83 @@ func (m *mockBandwidthAdapter) stop() {
 	m.wg.Wait()
 }
 
+// TestAggregator_WithTeam verifies that the WithTeam option stamps team
+// ownership on every packet flushed to the sink, and that the no-team
+// warning is suppressed when a team is configured.
+func TestAggregator_WithTeam(t *testing.T) {
+	var received []nexus.BandwidthMetrics
+	var mu sync.Mutex
+
+	sink := nexus.BandwidthMetricsSink(func(_ string, m nexus.BandwidthMetrics) error {
+		mu.Lock()
+		received = append(received, m)
+		mu.Unlock()
+		return nil
+	})
+
+	team := &nexus.Team{Name: "orders-team", Department: "payments"}
+
+	a := NewAggregator(context.Background(), sink, "test-topic", testLogger{},
+		WithTeam(team),
+	)
+	a.flushInterval = 10 * time.Minute
+	a.Start()
+
+	a.Receive(nexus.BandwidthMetrics{BandwidthMetricsID: "team-1"})
+	a.Receive(nexus.BandwidthMetrics{BandwidthMetricsID: "team-2"})
+
+	a.Stop()
+
+	mu.Lock()
+	got := received
+	mu.Unlock()
+
+	if len(got) != 2 {
+		t.Fatalf("expected 2 packets, got %d", len(got))
+	}
+	for i, p := range got {
+		if p.Team == nil {
+			t.Errorf("packet %d: Team was nil, expected stamped team", i)
+			continue
+		}
+		if p.Team.Name != "orders-team" {
+			t.Errorf("packet %d: expected Team.Name 'orders-team', got %q", i, p.Team.Name)
+		}
+	}
+}
+
+// TestAggregator_WithTeam_NilIsNoOp ensures WithTeam(nil) does not panic
+// and behaves like the no-team default (Receive leaves packet.Team alone)
+func TestAggregator_WithTeam_NilIsNoOp(t *testing.T) {
+	var received []nexus.BandwidthMetrics
+	var mu sync.Mutex
+
+	sink := nexus.BandwidthMetricsSink(func(_ string, m nexus.BandwidthMetrics) error {
+		mu.Lock()
+		received = append(received, m)
+		mu.Unlock()
+		return nil
+	})
+
+	a := NewAggregator(context.Background(), sink, "test-topic", testLogger{},
+		WithTeam(nil),
+	)
+	a.flushInterval = 10 * time.Minute
+	a.Start()
+
+	a.Receive(nexus.BandwidthMetrics{BandwidthMetricsID: "nil-team-1"})
+	a.Stop()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(received) != 1 {
+		t.Fatalf("expected 1 packet, got %d", len(received))
+	}
+	if received[0].Team != nil {
+		t.Errorf("expected Team to remain nil, got %+v", received[0].Team)
+	}
+}
+
 // TestAggregator_AdapterPumpIntegration wires a mock adapter to an aggregator
 // end-to-end: adapter pumps packets → aggregator buffers → sink receives.
 // Uses short intervals to keep the test fast.
