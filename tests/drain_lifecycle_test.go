@@ -195,6 +195,12 @@ func TestDrainLifecycle(t *testing.T) {
 		t.Errorf("processed %d messages, want %d", count, totalMessages)
 	}
 
+	// Shutdown drains the metrics collector's async buffer before we assert
+	// on metric counts (Drain only waits for workers + offsets, not metrics)
+	if err := consumer.Shutdown(); err != nil {
+		t.Logf("shutdown: %v", err)
+	}
+
 	// --- Metrics completeness ---
 	// Every message must have appeared in the metrics sink with the correct
 	// partition and offset. This verifies the full pipeline path: poll → route →
@@ -221,9 +227,4 @@ func TestDrainLifecycle(t *testing.T) {
 
 	t.Logf("drain lifecycle: %d messages (%d keys × %d/key), %d partitions, drained in %v",
 		totalMessages, numKeys, msgsPerKey, numPartitions, drainDuration.Round(time.Millisecond))
-
-	// Clean shutdown
-	if err := consumer.Shutdown(); err != nil {
-		t.Logf("shutdown: %v", err)
-	}
 }
