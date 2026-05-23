@@ -5,7 +5,6 @@ package pipeline
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -106,7 +105,7 @@ func TestDeadlock_MutexHeldDuringBlockingChannelSend(t *testing.T) {
 		}
 	case <-time.After(30 * time.Second):
 		const deadlock = "deadlock detected: SendToWorkerForProcessing likely holding mutex during blocking channel send, %d processed"
-		t.Fatal(fmt.Sprintf(deadlock, processedCount.Load()))
+		t.Fatalf(deadlock, processedCount.Load())
 	}
 }
 

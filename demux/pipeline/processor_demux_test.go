@@ -6,7 +6,6 @@ package pipeline
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -2925,7 +2924,7 @@ func TestNewDemux_CircuitBreakerTriggeredOnDeadLetterFailure(t *testing.T) {
 }
 
 func Test_RetrySpinDelay(t *testing.T) {
-	if fmt.Sprintf("%s", retrySpinDelay) != "100µs" {
+	if retrySpinDelay.String() != "100µs" {
 		t.Errorf("retrySpinDelay should be 100µs but was %s", retrySpinDelay)
 	}
 }

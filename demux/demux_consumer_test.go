@@ -470,6 +470,12 @@ func Test_Consumer_Unsubscribe_Timeout_TriggersCircuitBreaker(t *testing.T) {
 	consumer := builder.Build(broker)
 	dxc := consumer.(*Consumer[any]) //nolint:forcetypeassert // test: known type from builder
 
+	// for callback assert
+	callbackFired := make(chan error, 1)
+	dxc.RegisterShutdownCallback(func(_ context.Context, reason error) {
+		callbackFired <- reason
+	})
+
 	// Subscribe first
 	subscribeDone := make(chan error, 1)
 	go func() {
@@ -500,6 +506,22 @@ func Test_Consumer_Unsubscribe_Timeout_TriggersCircuitBreaker(t *testing.T) {
 	}
 	if errs[0] != expectedErr {
 		t.Errorf("logged error mismatch:\ngot:  %q\nwant: %q", errs[0], expectedErr)
+	}
+
+	select {
+	case reason := <-callbackFired:
+		if reason == nil {
+			t.Error("shutdown callback fired with nil reason; expected emergency reason")
+		} else {
+			const expect = "circuit-breaker: triggered and completed protective shutdown, " +
+				"reason: timeout: 50ms exceeded draining prior to unsubscribe, triggering circuit breaker"
+
+			if reason.Error() != expect {
+				t.Errorf("callback error mismatch:\ngot:  %q\nwant: %q", reason, expect)
+			}
+		}
+	case <-time.After(time.Second):
+		t.Error("shutdown callback never fired after circuit breaker trigger")
 	}
 }
 
