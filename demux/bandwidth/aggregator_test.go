@@ -392,8 +392,8 @@ func (m *mockBandwidthAdapter) stop() {
 
 // TestAggregator_WithTeam verifies that the WithTeam option stamps team
 // ownership on every packet flushed to the sink, and that the no-team
-// warning is suppressed when a team is configured.
-func TestAggregator_WithTeam(t *testing.T) {
+// warning is suppressed when a service is configured.
+func TestAggregator_WithService(t *testing.T) {
 	var received []nexus.BandwidthMetrics
 	var mu sync.Mutex
 
@@ -404,16 +404,16 @@ func TestAggregator_WithTeam(t *testing.T) {
 		return nil
 	})
 
-	team := &nexus.Team{Name: "orders-team", Department: "payments"}
+	service := &nexus.Service{Name: "orders-api", Team: "orders-team"}
 
 	a := NewAggregator(context.Background(), sink, "test-topic", testLogger{},
-		WithTeam(team),
+		WithService(service),
 	)
 	a.flushInterval = 10 * time.Minute
 	a.Start()
 
-	a.Receive(nexus.BandwidthMetrics{BandwidthMetricsID: "team-1"})
-	a.Receive(nexus.BandwidthMetrics{BandwidthMetricsID: "team-2"})
+	a.Receive(nexus.BandwidthMetrics{BandwidthMetricsID: "svc-1"})
+	a.Receive(nexus.BandwidthMetrics{BandwidthMetricsID: "svc-2"})
 
 	a.Stop()
 
@@ -425,19 +425,22 @@ func TestAggregator_WithTeam(t *testing.T) {
 		t.Fatalf("expected 2 packets, got %d", len(got))
 	}
 	for i, p := range got {
-		if p.Team == nil {
-			t.Errorf("packet %d: Team was nil, expected stamped team", i)
+		if p.Service == nil {
+			t.Errorf("packet %d: Service was nil, expected stamped service", i)
 			continue
 		}
-		if p.Team.Name != "orders-team" {
-			t.Errorf("packet %d: expected Team.Name 'orders-team', got %q", i, p.Team.Name)
+		if p.Service.Name != "orders-api" {
+			t.Errorf("packet %d: expected Service.Name 'orders-api', got %q", i, p.Service.Name)
+		}
+		if p.Service.Team != "orders-team" {
+			t.Errorf("packet %d: expected Service.Team 'orders-team', got %q", i, p.Service.Team)
 		}
 	}
 }
 
-// TestAggregator_WithTeam_NilIsNoOp ensures WithTeam(nil) does not panic
-// and behaves like the no-team default (Receive leaves packet.Team alone)
-func TestAggregator_WithTeam_NilIsNoOp(t *testing.T) {
+// TestAggregator_WithService_NilIsNoOp ensures WithService(nil) does not panic
+// and behaves like the no-service default (Receive leaves packet.Service alone)
+func TestAggregator_WithService_NilIsNoOp(t *testing.T) {
 	var received []nexus.BandwidthMetrics
 	var mu sync.Mutex
 
@@ -449,12 +452,12 @@ func TestAggregator_WithTeam_NilIsNoOp(t *testing.T) {
 	})
 
 	a := NewAggregator(context.Background(), sink, "test-topic", testLogger{},
-		WithTeam(nil),
+		WithService(nil),
 	)
 	a.flushInterval = 10 * time.Minute
 	a.Start()
 
-	a.Receive(nexus.BandwidthMetrics{BandwidthMetricsID: "nil-team-1"})
+	a.Receive(nexus.BandwidthMetrics{BandwidthMetricsID: "nil-svc-1"})
 	a.Stop()
 
 	mu.Lock()
@@ -462,8 +465,8 @@ func TestAggregator_WithTeam_NilIsNoOp(t *testing.T) {
 	if len(received) != 1 {
 		t.Fatalf("expected 1 packet, got %d", len(received))
 	}
-	if received[0].Team != nil {
-		t.Errorf("expected Team to remain nil, got %+v", received[0].Team)
+	if received[0].Service != nil {
+		t.Errorf("expected Service to remain nil, got %+v", received[0].Service)
 	}
 }
 

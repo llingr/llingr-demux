@@ -295,13 +295,9 @@ func Test_CollectorSendFailure_IncrementsFailedCounter(t *testing.T) {
 	// Send one message
 	collector.Collect(pool.Borrow())
 
-	// Wait for processing (yield to let collector goroutine run)
-	for i := 0; i < 100000; i++ {
-		runtime.Gosched()
-		if collector.SendFailedCount.Load() > 0 {
-			break
-		}
-	}
+	// Stop drains the async pipeline synchronously, guaranteeing the sink
+	// has been called (and SendFailedCount incremented) before we assert
+	collector.Stop()
 
 	// confirm SendFailedCount incremented
 	if failed := collector.SendFailedCount.Load(); failed != 1 {
@@ -342,14 +338,9 @@ func Test_CollectorSendPanic_IncrementsFailedCounter(t *testing.T) {
 	// send a message
 	collector.Collect(pool.Borrow())
 
-	// wait for processing (yield to let collector goroutine run)
-	for i := 0; i < 30000; i++ {
-		runtime.Gosched()
-		if collector.SendFailedCount.Load() > 0 {
-			break
-		}
-		time.Sleep(50 * time.Microsecond)
-	}
+	// Stop drains the async pipeline synchronously, guaranteeing the sink
+	// has been called (and SendFailedCount incremented) before we assert
+	collector.Stop()
 
 	// confirm SendFailedCount incremented (panic recovered and counted)
 	if failed := collector.SendFailedCount.Load(); failed != 1 {
@@ -608,9 +599,9 @@ func Test_SinkContext(t *testing.T) {
 	}
 
 	expectedCtx := nexus.SinkContext{
-		TopicName:       "test-topic-name",
-		ConsumerGroup:   "test-consumer-group",
-		ApplicationName: "test-app",
+		Service:       &nexus.Service{Name: "test-app", Team: "test-team"},
+		TopicName:     "test-topic-name",
+		ConsumerGroup: "test-consumer-group",
 	}
 
 	collector := NewCollector[string](ctx, cfg, metricsSink, expectedCtx, pool, logger)
@@ -636,8 +627,11 @@ func Test_SinkContext(t *testing.T) {
 	if capturedCtx.ConsumerGroup != expectedCtx.ConsumerGroup {
 		t.Errorf("expected consumer group %q, got %q", expectedCtx.ConsumerGroup, capturedCtx.ConsumerGroup)
 	}
-	if capturedCtx.ApplicationName != expectedCtx.ApplicationName {
-		t.Errorf("expected application name %q, got %q", expectedCtx.ApplicationName, capturedCtx.ApplicationName)
+	if capturedCtx.Service == nil || capturedCtx.Service.Name != expectedCtx.Service.Name {
+		t.Errorf("expected Service.Name %q, got %+v", expectedCtx.Service.Name, capturedCtx.Service)
+	}
+	if capturedCtx.Service == nil || capturedCtx.Service.Team != expectedCtx.Service.Team {
+		t.Errorf("expected Service.Team %q, got %+v", expectedCtx.Service.Team, capturedCtx.Service)
 	}
 
 	collector.Stop()
