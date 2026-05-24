@@ -176,36 +176,23 @@ func TestWithBandwidthFlushInterval(t *testing.T) {
 	}
 }
 
-func TestWithApplicationName(t *testing.T) {
+func TestWithService(t *testing.T) {
 	builder := NewBuilder[string]("test-topic", noopProcess, noopDeadLetter)
 
-	result := builder.WithApplicationName("orders-service")
+	service := nexus.Service{Name: "payments-api", Team: "payments-team"}
+	result := builder.WithService(service)
 
 	if result != builder {
-		t.Error("WithApplicationName should return same builder for chaining")
+		t.Error("WithService should return same builder for chaining")
 	}
-	if builder.applicationName != "orders-service" {
-		t.Errorf("applicationName = %q, want %q", builder.applicationName, "orders-service")
+	if builder.service == nil {
+		t.Fatal("service should be set")
 	}
-}
-
-func TestWithTeam(t *testing.T) {
-	builder := NewBuilder[string]("test-topic", noopProcess, noopDeadLetter)
-
-	team := nexus.Team{Name: "payments", Department: "finance"}
-	result := builder.WithTeam(team)
-
-	if result != builder {
-		t.Error("WithTeam should return same builder for chaining")
+	if builder.service.Name != "payments-api" {
+		t.Errorf("service.Name = %q, want %q", builder.service.Name, "payments-api")
 	}
-	if builder.team == nil {
-		t.Fatal("team should be set")
-	}
-	if builder.team.Name != "payments" {
-		t.Errorf("team.Name = %q, want %q", builder.team.Name, "payments")
-	}
-	if builder.team.Department != "finance" {
-		t.Errorf("team.Department = %q, want %q", builder.team.Department, "finance")
+	if builder.service.Team != "payments-team" {
+		t.Errorf("service.Team = %q, want %q", builder.service.Team, "payments-team")
 	}
 }
 
@@ -449,7 +436,7 @@ func TestBuild_BandwidthSink_AdapterImplementsBandwidthPort(t *testing.T) {
 		WithLogger(logger).
 		WithBandwidthMetricsSink(func(_ string, _ nexus.BandwidthMetrics) error { return nil }).
 		WithBandwidthFlushInterval(2 * time.Second).
-		WithTeam(nexus.Team{Name: "test-team"})
+		WithService(nexus.Service{Name: "test-service", Team: "test-team"})
 
 	broker := &builderBandwidthBroker{}
 	consumer := builder.Build(broker)

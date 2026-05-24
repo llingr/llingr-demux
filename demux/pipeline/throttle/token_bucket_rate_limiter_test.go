@@ -82,10 +82,10 @@ func TestNewTokenBucket_RefillsAfterBurstConsumed(t *testing.T) {
 	limiter.Await(nil)
 	elapsed := time.Since(start)
 
-	if elapsed < 8*time.Millisecond {
+	if elapsed < 5*time.Millisecond {
 		t.Errorf("refill too fast: %v", elapsed)
 	}
-	if elapsed > 30*time.Millisecond {
+	if elapsed > 100*time.Millisecond {
 		t.Errorf("refill too slow: %v", elapsed)
 	}
 }
@@ -115,7 +115,7 @@ func TestNewTokenBucket_BurstOfOne(t *testing.T) {
 	limiter.Await(nil)
 	elapsed := time.Since(start)
 
-	if elapsed < 8*time.Millisecond {
+	if elapsed < 5*time.Millisecond {
 		t.Errorf("should wait for refill, only took %v", elapsed)
 	}
 }

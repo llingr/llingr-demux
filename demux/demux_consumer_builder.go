@@ -56,8 +56,7 @@ type ConsumerBuilder[T any] struct {
 	ctx                    context.Context                          // for control plane logging
 	bandwidthMetricsSink   nexus.BandwidthMetricsSink               // optional bandwidth telemetry
 	bandwidthFlushInterval time.Duration                            // optional: override aggregator flush interval
-	applicationName        string                                   // optional: populates SinkContext.ApplicationName
-	team                   *nexus.Team                              // optional: team ownership for fleet routing
+	service                *nexus.Service                           // optional: service identity for fleet routing
 	overflowGuard          chan struct{}                            // capacity sharing across multiple consumer instances
 	rateLimiter            throttle.RateLimiter[T]                  // optional rate limiting
 }
@@ -163,10 +162,9 @@ func (b *ConsumerBuilder[T]) Build(brokerPort nexus.BrokerPort[T]) nexus.Adapted
 
 	// instance-level identity for metrics routing (set once, never changes)
 	sinkCtx := nexus.SinkContext{
-		TopicName:       b.topicName,
-		ConsumerGroup:   brokerPort.ConsumerGroup(),
-		ApplicationName: b.applicationName,
-		Team:            b.team,
+		Service:       b.service,
+		TopicName:     b.topicName,
+		ConsumerGroup: brokerPort.ConsumerGroup(),
 	}
 
 	// non-blocking, GC-friendly metrics collector
@@ -180,8 +178,8 @@ func (b *ConsumerBuilder[T]) Build(brokerPort nexus.BrokerPort[T]) nexus.Adapted
 			if b.bandwidthFlushInterval > 0 {
 				aggOpts = append(aggOpts, bandwidth.WithFlushInterval(b.bandwidthFlushInterval))
 			}
-			if b.team != nil {
-				aggOpts = append(aggOpts, bandwidth.WithTeam(b.team))
+			if b.service != nil {
+				aggOpts = append(aggOpts, bandwidth.WithService(b.service))
 			}
 			bandwidthAggregator = bandwidth.NewAggregator(b.ctx, b.bandwidthMetricsSink, b.topicName, b.logger, aggOpts...)
 			bp.SetBandwidthCallback(bandwidthAggregator.Receive)
@@ -417,27 +415,9 @@ func (b *ConsumerBuilder[T]) WithRateLimiter(limiter throttle.RateLimiter[T]) *C
 	return b
 }
 
-// WithApplicationName sets an optional application name for metrics identity.
-//
-// The name is included in SinkContext on every MetricsSink call, enabling
-// fleet-level metrics aggregation when multiple applications share
-// a consumer group or topic.
-//
-// If not set, SinkContext.ApplicationName is "".
-func (b *ConsumerBuilder[T]) WithApplicationName(name string) *ConsumerBuilder[T] {
-	b.applicationName = name
-	return b
-}
-
-// WithTeam sets team ownership metadata for fleet routing and alerting.
-//
-// The team name is included in SinkContext on every MetricsSink call and
-// in BandwidthMetrics packets, enabling fleet-level discovery of which
-// team owns each consumer instance.
-//
-// If not set, team metadata is nil in SinkContext and BandwidthMetrics.
-func (b *ConsumerBuilder[T]) WithTeam(team nexus.Team) *ConsumerBuilder[T] {
-	b.team = &team
+// WithService identity sent to metrics sink callbacks
+func (b *ConsumerBuilder[T]) WithService(service nexus.Service) *ConsumerBuilder[T] {
+	b.service = &service
 	return b
 }
 

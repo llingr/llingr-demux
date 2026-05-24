@@ -43,7 +43,7 @@ type Stats struct {
 type Aggregator struct {
 	sink          nexus.BandwidthMetricsSink
 	topicName     string
-	team          *nexus.Team
+	service       *nexus.Service
 	buffer        []nexus.BandwidthMetrics
 	mu            sync.Mutex
 	flushInterval time.Duration
@@ -72,10 +72,10 @@ func WithFlushInterval(d time.Duration) AggregatorOption {
 	}
 }
 
-// WithTeam stamps team ownership metadata on every bandwidth packet.
-func WithTeam(team *nexus.Team) AggregatorOption {
+// WithService stamps service identity on every bandwidth packet.
+func WithService(service *nexus.Service) AggregatorOption {
 	return func(a *Aggregator) {
-		a.team = team
+		a.service = service
 	}
 }
 
@@ -108,8 +108,8 @@ func (a *Aggregator) Start() {
 // It appends the packet to the buffer and triggers an immediate flush when
 // the buffer reaches the threshold.
 func (a *Aggregator) Receive(packet nexus.BandwidthMetrics) {
-	if a.team != nil {
-		packet.Team = a.team
+	if a.service != nil {
+		packet.Service = a.service
 	}
 	a.mu.Lock()
 	a.buffer = append(a.buffer, packet)
@@ -168,9 +168,9 @@ func (a *Aggregator) flush() {
 	a.buffer = make([]nexus.BandwidthMetrics, 0, a.maxBuffer)
 	a.mu.Unlock()
 
-	if a.team == nil {
+	if a.service == nil {
 		a.warnOnce.Do(func() {
-			a.logger.Warn(a.ctx, "WithTeam() has not been configured - set this for fleet self-reporting")
+			a.logger.Warn(a.ctx, "WithService() has not been configured - set this for fleet self-reporting")
 		})
 	}
 
