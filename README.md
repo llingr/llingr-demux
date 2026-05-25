@@ -1,5 +1,12 @@
 # llingr-demux
 
+[![CI](https://github.com/llingr/llingr-demux/actions/workflows/ci.yml/badge.svg)](https://github.com/llingr/llingr-demux/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/llingr/llingr-demux.svg)](https://pkg.go.dev/github.com/llingr/llingr-demux)
+[![Go Report Card](https://goreportcard.com/badge/github.com/llingr/llingr-demux)](https://goreportcard.com/report/github.com/llingr/llingr-demux)
+[![Tag](https://img.shields.io/github/v/tag/llingr/llingr-demux)](https://github.com/llingr/llingr-demux/tags)
+[![License](https://img.shields.io/badge/License-AGPL--3.0_or_Commercial-blue.svg)](LICENSE)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/llingr/llingr-demux)](go.mod)
+
 A Go consumer engine for message brokers with ordered partition/offset semantics,
 which fans out partition-ordered messages through concurrent per-key workers.
 Each worker uses a channel to preserve per-key ordering.
