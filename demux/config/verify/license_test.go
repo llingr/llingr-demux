@@ -76,9 +76,12 @@ func TestLicense_Valid(t *testing.T) {
 	now := time.Now().UTC()
 	t.Setenv(licenseToken, signToken(privateKey, validValues(now)))
 
-	message, err := License(now, keyResolverFor(testKID, publicKey))
+	message, level, err := License(now, keyResolverFor(testKID, publicKey))
 	if err != nil {
 		t.Fatalf("License: %v", err)
+	}
+	if level != Info {
+		t.Errorf("level = %d, want Info for a verified licence", level)
 	}
 	if !strings.Contains(message, "[VERIFIED]") || !strings.Contains(message, testSUB) {
 		t.Errorf("message = %q", message)
@@ -89,9 +92,12 @@ func TestLicense_NoToken(t *testing.T) {
 	_, publicKey := testKey()
 	t.Setenv(licenseToken, "")
 
-	message, err := License(time.Now().UTC(), keyResolverFor(testKID, publicKey))
+	message, level, err := License(time.Now().UTC(), keyResolverFor(testKID, publicKey))
 	if err != nil {
 		t.Fatalf("no token should not error: %v", err)
+	}
+	if level != Debug {
+		t.Errorf("level = %d, want Debug for the AGPL notice", level)
 	}
 	if message != licenseTerms {
 		t.Errorf("message = %q, want licenseTerms", message)
@@ -106,9 +112,12 @@ func TestLicense_Expired(t *testing.T) {
 	values.Set("exp", strconv.FormatInt(now.Add(-time.Hour).Unix(), 10))
 	t.Setenv(licenseToken, signToken(privateKey, values))
 
-	message, err := License(now, keyResolverFor(testKID, publicKey))
+	message, level, err := License(now, keyResolverFor(testKID, publicKey))
 	if err == nil {
 		t.Fatalf("expired token verified: %q", message)
+	}
+	if level != Info {
+		t.Errorf("level = %d, want Info (an expired licence is a louder hint)", level)
 	}
 	if message != licenseTerms {
 		t.Errorf("expired message = %q, want licenseTerms", message)
@@ -122,7 +131,7 @@ func TestLicense_NotYetValid(t *testing.T) {
 	values.Set("iat", strconv.FormatInt(now.Add(time.Hour).Unix(), 10))
 	t.Setenv(licenseToken, signToken(privateKey, values))
 
-	if message, err := License(now, keyResolverFor(testKID, publicKey)); err == nil {
+	if message, _, err := License(now, keyResolverFor(testKID, publicKey)); err == nil {
 		t.Fatalf("not-yet-valid token verified: %q", message)
 	}
 }
@@ -133,7 +142,7 @@ func TestLicense_BadToken(t *testing.T) {
 	_, publicKey := testKey()
 	t.Setenv(licenseToken, "this-token-has-no-dot")
 
-	message, err := License(time.Now().UTC(), keyResolverFor(testKID, publicKey))
+	message, _, err := License(time.Now().UTC(), keyResolverFor(testKID, publicKey))
 	if err == nil {
 		t.Fatalf("bad token verified: %q", message)
 	}
@@ -142,11 +151,9 @@ func TestLicense_BadToken(t *testing.T) {
 	}
 }
 
-// The AGPL terms must be the returned message in EVERY unlicensed situation, so
-// the builder's logger.Info(message) (demux_consumer_builder.go) always logs the
-// notice. There is one case per distinct error-return path in License /
-// getClaims / split / parseClaims, plus the no-token, expired and not-yet-valid
-// paths.
+// Every unlicensed path must return the AGPL terms as the message. One case per
+// error-return path in License / getClaims / split / parseClaims, plus no-token,
+// expired and not-yet-valid.
 func TestLicense_TermsLoggedWhenUnlicensed(t *testing.T) {
 	privateKey, publicKey := testKey()
 	now := time.Now().UTC()
@@ -194,7 +201,7 @@ func TestLicense_TermsLoggedWhenUnlicensed(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Setenv(licenseToken, c.token)
-			message, _ := License(now, resolveKey)
+			message, _, _ := License(now, resolveKey)
 			if message != licenseTerms {
 				t.Errorf("message = %q, want licenseTerms", message)
 			}
@@ -223,7 +230,7 @@ func TestLicense_SpecialSubject(t *testing.T) {
 	values.Set("sub", subject)
 	t.Setenv(licenseToken, signToken(privateKey, values))
 
-	message, err := License(now, keyResolverFor(testKID, publicKey))
+	message, _, err := License(now, keyResolverFor(testKID, publicKey))
 	if err != nil {
 		t.Fatalf("License: %v", err)
 	}
