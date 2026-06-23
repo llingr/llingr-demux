@@ -6,6 +6,7 @@ package demux
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/llingr/llingr-demux/demux/bandwidth"
 	"github.com/llingr/llingr-demux/demux/circuitbreaker"
 	"github.com/llingr/llingr-demux/demux/config"
+	"github.com/llingr/llingr-demux/demux/config/verify"
 	"github.com/llingr/llingr-demux/demux/deadletter"
 	"github.com/llingr/llingr-demux/demux/drain"
 	"github.com/llingr/llingr-demux/demux/metrics"
@@ -59,6 +61,7 @@ type ConsumerBuilder[T any] struct {
 	service                *nexus.Service                           // optional: service identity for fleet routing
 	overflowGuard          chan struct{}                            // capacity sharing across multiple consumer instances
 	rateLimiter            throttle.RateLimiter[T]                  // optional rate limiting
+	licenseKeyFn           verify.GetKeyFn                          // test seam; defaults to verify.GetPublicKey
 }
 
 // NewBuilder creates a ConsumerBuilder with required dependencies.
@@ -144,6 +147,10 @@ func (b *ConsumerBuilder[T]) Build(brokerPort nexus.BrokerPort[T]) nexus.Adapted
 
 	if b.logger == nil {
 		b.logger = nexus.NewDefaultLogger(slog.LevelInfo)
+	}
+
+	if b.licenseKeyFn == nil {
+		b.licenseKeyFn = verify.GetPublicKey
 	}
 
 	if b.metricsSink == nil {
@@ -253,7 +260,32 @@ func (b *ConsumerBuilder[T]) Build(brokerPort nexus.BrokerPort[T]) nexus.Adapted
 		consumer.shutdownCallback.Store(&b.shutdownCallback)
 	}
 
+	message, err := safeLicense(time.Now(), b.licenseKeyFn)
+	if err != nil {
+		consumer.logger.Warn(consumer.ctx, err.Error())
+	}
+	if message != "" {
+		consumer.logger.Info(consumer.ctx, message)
+	}
+
 	return consumer
+}
+
+// safeLicense wraps verify.License so a panic in the licence check can never
+// propagate out of Build. verify.License has no panic path today: the only
+// panic-capable call (ed25519.Verify, which panics on a wrong-length key) is
+// guarded by an explicit length check, and every decode/parse step returns an
+// error rather than panicking. This recover is defence-in-depth, ensuring a
+// future change in the verify package can never take down consumer
+// construction. On a recovered panic the licence is treated as unverified
+// (logged at Warn); the consumer is still built and runs normally.
+func safeLicense(now time.Time, keyFn verify.GetKeyFn) (msg string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			msg, err = "", fmt.Errorf("verify: recovered from panic in licence check: %v", r)
+		}
+	}()
+	return verify.License(now, keyFn)
 }
 
 // WithMetricsSink sets the metrics sink for observability.
