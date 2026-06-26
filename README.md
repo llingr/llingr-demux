@@ -15,8 +15,6 @@ spend low and minimize operational complexity while significantly improving thro
 Reliable and observable: per-key ordering, clean rebalances, at-least-once processing, per-message
 telemetry, per-consumer bandwidth.
 
-See: [llingr.io](https://llingr.io)
-
 Built using standard Go with **no third-party dependencies**.
 
 ```bash
@@ -34,7 +32,7 @@ Adapters bridge llingr-demux to specific brokers, currently:
 
 ## Quick Start
 
-For high-level docs see: [llingr.io/docs](https://llingr.io/docs)
+For overview see: [llingr.io/docs](https://llingr.io/docs)
 
 Integration requires two callbacks - `ProcessMessage` and `WriteDeadLetter` -
 alongside your existing broker client configuration. The llingr-demux engine handles
@@ -99,6 +97,8 @@ func shutdownFn(ctx context.Context, reason error) {
 
 ### Options
 
+For overview see: [llingr.io/docs](https://llingr.io/docs#builder-options)
+
 Consumer builder methods:
 
 - **WithMetricsSink** - metrics collection (see [Observability](#observability))
@@ -121,6 +121,8 @@ to self.
 
 ## How It Works
 
+For overview see: [llingr.io/correctness](https://llingr.io/correctness)
+
 The `pipeline.Processor` demultiplexes (fans out) by partition key, delivering
 messages into concurrent per-key workers that invoke the host application's
 `ProcessMessage` callback. Each worker uses a Go channel to preserve per-key
@@ -135,6 +137,8 @@ outside this library. The [llingr-nexus](https://github.com/llingr/llingr-nexus)
 interface layer acts as a broker-agnostic bridge to adapters.
 
 ### Configuration
+
+For overview see: [llingr.io/docs](https://llingr.io/docs#config-concurrency)
 
 - [demux/config/README.md](demux/config/README.md) - tuning guide
 - [demux/config/demux_config_defaults.go](demux/config/demux_config_defaults.go) - defaults
