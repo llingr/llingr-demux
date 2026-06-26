@@ -7,11 +7,17 @@
 [![License](https://img.shields.io/badge/License-AGPL--3.0_or_Commercial-blue.svg)](LICENSE)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/llingr/llingr-demux)](go.mod)
 
-A Go consumer engine for message brokers with ordered partition/offset semantics,
-which fans out partition-ordered messages through concurrent per-key workers.
-Each worker uses a channel to preserve per-key ordering.
+Efficient message consumer engine for brokers with ordered partition/offset semantics.
 
-Built on the Go standard library with no third-party dependencies.
+Scale consumers vertically to improve compute utilization, keep costly broker/infrastructure
+spend low and minimize operational complexity while significantly improving throughput and latency.
+
+Reliable and observable: per-key ordering, clean rebalances, at-least-once processing, per-message
+telemetry, per-consumer bandwidth.
+
+See: [llingr.io](https://llingr.io)
+
+Built using standard Go with **no third-party dependencies**.
 
 ```bash
 go get github.com/llingr/llingr-demux
@@ -20,11 +26,15 @@ go get github.com/llingr/llingr-demux
 Adapters bridge llingr-demux to specific brokers, currently:
 
 - [llingr-adapter-kafka](https://github.com/llingr/llingr-adapter-kafka) -
-  Confluent Kafka (CGO/librdkafka, Apache 2.0)
+  `confluent-kafka-go` (CGO/librdkafka, Apache 2.0)
+- [llingr-adapter-franz](https://github.com/llingr/llingr-adapter-franz) -
+  `franz-go` (pure Go, Apache 2.0)
 
 ---
 
 ## Quick Start
+
+For high-level docs see: [llingr.io/docs](https://llingr.io/docs)
 
 Integration requires two callbacks - `ProcessMessage` and `WriteDeadLetter` -
 alongside your existing broker client configuration. The llingr-demux engine handles
@@ -182,7 +192,7 @@ The [llingr-metrics-prometheus](https://github.com/llingr/llingr-metrics-prometh
 adapter provides a ready-to-use `MetricsSink`.
 
 `consumer.SnapshotHandler()` returns an `http.HandlerFunc` serving a JSON
-snapshot of internal state including: concurrency utilisation, sliding-window throughput,
+snapshot of internal state including: concurrency utilization, sliding-window throughput,
 partition offsets, and gap buffer depths.
 
 ---
