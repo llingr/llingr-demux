@@ -185,7 +185,7 @@ func (oc *Committer[T]) flushGapBuffers(now time.Time) {
 			case tracker.Ready == nil && g.Message.Offset < tracker.CommittedPlusOne:
 				// below the baseline with Ready empty: a leftover that can never
 				// commit; prune it as orphaned so it cannot block the
-				// re-initialisation below
+				// re-initialization below
 				nexus.SetOrphaned(&g.Metrics.Traits)
 				g.Metrics.WatermarkAdvanceTime = now
 				oc.returnMessageAndCollectMetrics(g)
@@ -205,7 +205,10 @@ func (oc *Committer[T]) flushGapBuffers(now time.Time) {
 				g.Metrics.WatermarkAdvanceTime = now
 				advancedOffsetIndex = i
 			case tracker.Ready == nil:
-				// nothing qualifies yet: the true successor has not completed
+				// nothing qualifies yet: the true successor has not completed.
+				// Linkage broken by log compaction across ownership epochs is
+				// repaired at commit cadence instead (see repairSuccessor),
+				// never on this batch path.
 				break walk
 			case g.Message.Offset <= tracker.Ready.Message.Offset:
 				// at or below the watermark: an orphan buffered while the baseline was
@@ -253,7 +256,12 @@ func (oc *Committer[T]) sortGapBuffer(offsetsTracker *OffsetsTracker[T]) {
 			return 1
 		}
 		foundDuplicate = true
-		return 0
+		// equal offsets are cross-epoch twins (impossible within one fetch
+		// stream) and their predecessor stamps are not interchangeable: order
+		// the later-read twin first so the compact keeps the current epoch's
+		// stamp. SortFunc is not stable, so equal elements must never be left
+		// for it to order; CompactFunc keeps the first of each equal run.
+		return b.Metrics.ReadTime.Compare(a.Metrics.ReadTime)
 	})
 
 	// amortized de-dupe

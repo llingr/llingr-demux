@@ -73,7 +73,13 @@ func (oc *Committer[T]) CommitOffsets() error {
 
 			workItem := offsetTracker.Ready
 			if workItem == nil {
-				continue
+				// stall repair of last resort: Ready empty with items buffered
+				// is the blockage signature, and the flag-gated flush above has
+				// already had its chance. A successful repair commits this tick.
+				oc.repairSuccessor(partition, offsetTracker)
+				if workItem = offsetTracker.Ready; workItem == nil {
+					continue
+				}
 			}
 
 			// A Ready below the baseline is stale (an orphaned work item from a previous ownership

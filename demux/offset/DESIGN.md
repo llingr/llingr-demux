@@ -124,8 +124,9 @@ When a commit succeeds, `Ready` is collected for metrics, `CommittedPlusOne` adv
 (monotonically - a commit never lowers it), and `LastCommittedOffset` records the committed
 record's offset.
 
-**LastCommittedOffset**: The only anchor predecessor linkage may promote against when Ready
-is empty. `CommittedPlusOne` is a *position*, not a record: after log compaction or an
+**LastCommittedOffset**: The only anchor predecessor linkage may promote against when
+Ready is empty, and the only anchor the successor repair reasons from (see Successor
+Repair). `CommittedPlusOne` is a *position*, not a record: after log compaction or an
 aborted transaction the offset below a reset-derived baseline need not exist, so deriving a
 linkage anchor arithmetically (`CommittedPlusOne - 1`) would promote stale items on
 coincidence. The field is set only by an actual commit success this epoch and reset to -1
@@ -169,6 +170,97 @@ exactly while a hole exists and resumes exactly when it fills, never lifting pas
 missing offset (that would move the broker watermark over unprocessed work: loss, not
 duplicates). Items below the baseline are pruned as orphaned during the walk so they can
 never block the initialisation.
+
+### Successor Repair (compaction across epochs)
+
+The walk's exact-match rules are always sufficient within one ownership epoch. The
+repair exists for one scenario, and every ingredient of it must line up at once:
+
+1. **A drain timeout leaves orphaned work items.** During a rebalance revoke, the drain
+   waits for in-flight work; if a worker is stuck past the timeout (a hung external
+   call, say), the partition is handed off with that work item still processing. When
+   it finally completes - possibly much later, in a new ownership epoch of the same
+   partition - it arrives at the committer as an orphaned work item carrying the
+   predecessor stamp of the OLD epoch's fetch stream.
+2. **Compaction breaks the lineage in the meantime.** Between the epochs, log
+   compaction (or retention) removes the records around the orphan's neighbourhood.
+   The new epoch's fetch stream now stamps its records against different predecessors
+   than the old stream saw: the two lineages no longer name each other.
+3. **The orphan sorts ahead of the chain's continuation.** The stale orphan buffers,
+   the epoch's real successor buffers behind it in sorted offset order, and the
+   exact-match walk stops at the orphan: nothing names it, it names nothing present.
+   No later arrival can flag the tracker again. Commits stop, every completion joins
+   the buffer, and the buffer grows without bound - a silent stall that only a
+   rebalance would clear.
+
+Why this is rare: it needs a drain timeout (bounded, configured, and unusual in
+itself), AND the stuck worker to complete after the same partition is re-assigned to
+this consumer, AND compaction to have removed exactly the records that would let
+redelivery re-link the chain (with the records intact, redelivery fills the buffer and
+the exact rules converge - saturated pipelines mask the hole), AND the interleaving to
+buffer the orphan ahead of the successor. Each factor is uncommon; the stall needs all
+of them. The engine still refuses to leave a permanent-stall-with-unbounded-growth mode
+reachable, however unlikely.
+
+`repairSuccessor` (committer_repair.go, tests in committer_repair_test.go) is the
+quarantined repair of last resort. It runs at commit cadence only, inside
+`CommitOffsets`, for a partition that looks stalled: Ready empty, items buffered, no
+flush pending, and a record committed this epoch to anchor on (never the baseline: a
+position is not a record, and the baseline record itself may be validly in flight).
+One linear scan, no sort, finds the LOWEST-offset item that provably holds the record
+immediately after `LastCommittedOffset`:
+
+1. **its offset is the baseline** (`CommittedPlusOne`): the completion of the exact
+   record the broker position names, whatever its stamp claims. Candidates below the
+   baseline are never considered and the baseline is never below `committed+1`, so
+   this also carries the offset-adjacency proof. A buffered First qualifies here and
+   ONLY here - its arrival already raised the baseline to its own offset, so a First
+   found above the baseline was overridden by a later, higher authority and is not
+   honoured;
+2. **its predecessor stamp is at or below the committed record**: delivery evidence
+   that the interval (stamp, offset) held no records when the item was fetched,
+   whichever epoch fetched it - records append in offset order and compaction and
+   retention only remove, so the interval holds none now. At-or-below rather than
+   exact, because committing one repaired item moves the anchor past the stamp the
+   next one carries.
+
+Promoting the provable successor skips nothing that exists, and every buffered item
+below it sits inside an interval proven empty: provably stale, pruned as orphaned. The
+must-not line is equally load-bearing: an item awaiting an in-flight predecessor
+carries a stamp ABOVE the committed record and satisfies no proof, so valid holes are
+never jumped (that would be loss, not duplicates); with no provable successor the pass
+is a no-op. Each repair logs a warning explaining the broken linkage. A successful
+repair commits on the same tick; anything still buffered is flagged for the next flush
+to chain with the normal exact rules.
+
+Why the stamp proof holds across epochs: broker offsets are assigned in append order
+and compaction/retention only ever REMOVE records, so a record existing now existed at
+every earlier moment after its append. A valid waiter's record existing below a
+qualifying successor would therefore have sat inside the successor's stamp interval
+when it was stamped, contradicting the stamp. If the successor qualifies, everything
+below it is provably dead; if anything below it is alive, no truthful stamp can
+qualify the successor.
+
+**Trust boundary: log truncation.** That argument, like every predecessor-linkage rule
+in this package (the walk's exact promotion included), assumes an offset identifies one
+immutable record. Unclean leader election breaks the assumption: the log can be
+truncated and NEW records appended at previously used offsets, so a stamp made against
+the old lineage says nothing about the new one, and a stale completion could commit
+past records it has never seen. The defence is layer 1 (`../pipeline/prev/`): the
+rewritten stream arrives as an offset regression or duplicate, which propagates as a
+processing error and trips the circuit breaker. The narrow window between holding
+stale completions and the fetch stream revealing the rewrite is a design-wide trust
+boundary, not specific to the repair, and the broker has already conceded data loss on
+its side when an unclean election happens.
+
+Operational recommendation: keep the broker's default 7-day retention
+(`log.retention.hours=168`, and equivalently avoid aggressive `delete`/`compact`
+settings that remove records within minutes or hours). The repair scenario needs
+compaction or retention to remove the records around an orphan BETWEEN two ownership
+epochs; with week-scale retention, records comfortably outlive any realistic drain
+timeout and stuck-worker window, redelivery re-links the chain through the normal
+exact rules, and the repair (and the trust boundary above) is essentially never
+exercised.
 
 Resizing uses 70%/300% hysteresis thresholds:
 
@@ -441,6 +533,10 @@ But "essentially never" isn't "never", and correctness demands handling the edge
 - `committer_gap_stall_test.go` - Ready re-initialisation from the buffer: broker-gap
   commit boundaries, tick-alone re-initialisation, recorded-commit linkage (never
   baseline arithmetic), and never advancing past a missing offset
+- `committer_repair_test.go` - Successor repair: stale blockers ahead of provable
+  successors, superseded stamps, second claimants of one anchor, and the MUST-NOT
+  suite (valid in-flight holes, no committed anchor, stray Firsts, below-baseline
+  junk, evidence-free stamps, waiters above the successor, entry gates)
 - `committer_fetch_discontinuity_test.go` - Fetch-position jumps without a rebalance
 - `committer_drain_handshake_test.go` - Drain vs live ingest handshake
 - `committer_model_test.go` / `committer_model_fuzz_test.go` - Model-based randomized
