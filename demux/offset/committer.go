@@ -109,9 +109,10 @@ func (oc *Committer[T]) ResetCommittedOffsets(partitionOffsets map[int32]int64) 
 		tracker, ok := oc.offsetsByPartition.PartitionMap[partition]
 		if !ok {
 			tracker = &OffsetsTracker[T]{
-				CommittedPlusOne: committedOffset,
-				Assignment:       nexus.Assign,
-				GapBuffer:        make([]*ports.WorkItem[T], 0, oc.gapBufferSize),
+				CommittedPlusOne:    committedOffset,
+				LastCommittedOffset: -1, // a baseline is a position, not a record
+				Assignment:          nexus.Assign,
+				GapBuffer:           make([]*ports.WorkItem[T], 0, oc.gapBufferSize),
 			}
 			oc.offsetsByPartition.PartitionMap[partition] = tracker
 		} else {
@@ -123,9 +124,39 @@ func (oc *Committer[T]) ResetCommittedOffsets(partitionOffsets map[int32]int64) 
 				tracker.Ready = nil
 			}
 
+			// A re-assign AFTER A REVOKE starts a fresh ownership epoch: anything still in
+			// the tracker is from the previous epoch (the revoke drain already committed
+			// everything committable) and is discarded unconditionally. The baseline check
+			// above is inert when the adapter cannot supply the real broker position at
+			// assign (an unknown-baseline sentinel is below every real offset): a stale
+			// Ready then survived the reset and was committed BACKWARDS on the next tick,
+			// and a stale gap-buffer item below the new epoch's watermark permanently
+			// stalled the flush walk permanently, silently stopping commits. Gated on the revoke marker
+			// so pre-assign deliveries from permissive test brokers are not discarded.
+			// See the reset-to-zero orphan regression tests.
+			if tracker.Assignment == nexus.Revoke {
+				if tracker.Ready != nil {
+					nexus.SetOrphaned(&tracker.Ready.Metrics.Traits)
+					oc.returnMessageAndCollectMetrics(tracker.Ready)
+					tracker.Ready = nil
+				}
+				for _, stale := range tracker.GapBuffer {
+					nexus.SetOrphaned(&stale.Metrics.Traits)
+					oc.returnMessageAndCollectMetrics(stale)
+				}
+				tracker.GapBuffer = tracker.GapBuffer[:0]
+			}
+
 			tracker.CommittedPlusOne = committedOffset
+			// this epoch has committed nothing yet: linkage promotion stays
+			// disabled until it does (the baseline is a position, not a record)
+			tracker.LastCommittedOffset = -1
 			tracker.Assignment = nexus.Assign
-			tracker.NeedsGapAdvance = false
+			// items buffered before this reset (against the old or an unknown
+			// baseline) may satisfy a Ready-initialisation rule against the new
+			// one with no further traffic ever arriving; ask the next flush to
+			// attempt to re-initialise Ready from the buffer
+			tracker.NeedsGapAdvance = len(tracker.GapBuffer) > 0
 		}
 	}
 }
@@ -154,5 +185,12 @@ func (oc *Committer[T]) MarkPartitionRevoked(partition int32) {
 	oc.mu.Lock()
 	defer oc.mu.Unlock()
 	delete(oc.assigned, partition)
+	// Stamp the tracker so a later re-assign knows this partition went through a
+	// revoke: any state still present then is from the closed epoch and is
+	// discarded by ResetCommittedOffsets. (Closes the model-implementation gap
+	// noted in COMMIT_GUARD_ANALYSIS.md: Assignment was only ever set to Assign.)
+	if tracker, ok := oc.offsetsByPartition.PartitionMap[partition]; ok {
+		tracker.Assignment = nexus.Revoke
+	}
 	oc.lastRebalanceTime = time.Now()
 }

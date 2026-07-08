@@ -169,6 +169,15 @@ making a final commit.
 the host application's lifecycle management. Worker completion and offset
 commits use the same flow as rebalance coordination.
 
+### Single Topic Per Consumer
+
+A consumer instance is intended for exactly one topic. The engine's offset
+tracking is keyed by partition number alone, so two topics that share partition
+numbers would silently cross-contaminate committed offsets if they reached the same
+consumer. The realistic way to hit this is handing an adapter a broker client
+configured with a multi-topic or pattern subscription. Avoid this: to consume
+multiple topics, build one consumer per topic, each scaling independently.
+
 ---
 
 ## Observability
@@ -196,8 +205,13 @@ The [llingr-metrics-prometheus](https://github.com/llingr/llingr-metrics-prometh
 adapter provides a ready-to-use `MetricsSink`.
 
 `consumer.SnapshotHandler()` returns an `http.HandlerFunc` serving a JSON
-snapshot of internal state including: concurrency utilization, sliding-window throughput,
-partition offsets, and gap buffer depths.
+snapshot of internal state including: concurrency utilization, sliding-window
+throughput, partition offsets, and gap buffer depths. One important alert worth
+considering could be on a partition's `gapBufferDepth` growing without bound: it
+is the sign of a stuck handler invocation: completions accumulate behind necessarily
+contiguous messages at full throughput, and commits for that partition will be
+delayed until the handler returns and the contiguous message stream is resolved.
+Thresholds are workload-specific, so this would be an operational alert.
 
 ---
 

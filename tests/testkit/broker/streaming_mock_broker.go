@@ -66,6 +66,10 @@ func (b *StreamingMockBroker) Subscribe() error {
 			b.rebalanceCallback()
 			close(b.subscribeCalled)
 		}()
+	} else {
+		// nothing to wait for: unblock delivery immediately so the Poll gate
+		// cannot starve a subscriber that configured no rebalance callback
+		close(b.subscribeCalled)
 	}
 
 	return nil
@@ -82,10 +86,15 @@ func (b *StreamingMockBroker) Unsubscribe() error {
 // When stopped, simulates normal broker behavior: waits for timeout and returns no message.
 // Occasionally creates offset gaps to simulate control records.
 func (b *StreamingMockBroker) Poll(timeout time.Duration) (scenario.TestMessage, bool, error) {
-	// Wait for subscribe to complete
+	// No delivery before the assignment is processed: real broker clients only
+	// fetch after assignment. Early delivery races the first commit tick, whose
+	// ownership guard discards the completions; this mock never redelivers, so
+	// the offset chain would break permanently (latent flake this gate closes).
 	select {
 	case <-b.subscribeCalled:
 	default:
+		time.Sleep(timeout)
+		return scenario.TestMessage{}, false, nil
 	}
 
 	// When stopped, behave like a normal broker with no messages: wait timeout, return nothing

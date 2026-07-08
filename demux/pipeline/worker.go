@@ -39,11 +39,10 @@ type Worker[T any] struct {
 	returnWorker     func(*Worker[T])         // return 'self' to WorkerShard's pool to be reused
 	overflowGuard    <-chan struct{}          // cross-consumer overflow capacity, distributes bursts
 	IsActive         bool                     // set to true when created or (re-)borrowed
-	isDraining       bool                     // set by Drain(), tells worker to signal when empty
+	drained          *sync.Cond               // broadcast on empty, wakes every concurrent Drain()
 
 	deadLetter     *deadletter.DeadLetter[T]      // called on work error or panic
 	circuitBreaker *circuitbreaker.CircuitBreaker // worker detecting infra issue can trigger
-	drainComplete  chan struct{}                  // signals Drain() can proceed, for fast rebalance
 	shutdown       chan struct{}
 	workerShard    *WorkerShard[T]
 	logger         nexus.Logger
@@ -61,7 +60,7 @@ func NewWorker[T any](workerShard *WorkerShard[T], bufferLen int,
 		logger:        logger,
 		guard:         guard,
 		overflowGuard: overflowGuard,
-		drainComplete: make(chan struct{}, 1),
+		drained:       sync.NewCond(&workerShard.mu),
 		shutdown:      make(chan struct{}),
 	}
 	return worker
@@ -131,11 +130,9 @@ func (w *Worker[T]) startProcessingWorkItems() {
 				if len(workItems) == 0 { // ensure no message arrived during fallthrough
 					delete(workers, partitionKey) // cached key
 					w.workerShard.activeCount = len(workers)
-					if w.isDraining {
-						w.drainComplete <- struct{}{}
-					}
 					returnWorkerToPool = true
 					w.IsActive = false // boolean is set to true when borrowed (inside same mutex)
+					w.drained.Broadcast() // wakes every Drain() waiter; no waiters is a no-op
 				}
 				w.mu.Unlock()
 
@@ -221,19 +218,14 @@ func (w *Worker[T]) triggerCircuitBreaker(workItem *ports.WorkItem[T], errDL err
 // For slow (typically external) systems, architect nexus.ProcessMessage[T] handler
 // to offload work before returning: for example a deep-copy or blocking/sequential
 // persist to a database, then (after copy) invoke async processing with managed retries.
+//
+// Safe for concurrent waiters: Broadcast wakes them all. A waiter racing a pool
+// re-borrow (IsActive true again) waits for the next empty; the drain
+// coordinator's timeout bounds that, same as before.
 func (w *Worker[T]) Drain() {
 	w.mu.Lock()
-	if !w.IsActive {
-		// worker already finished
-		w.mu.Unlock()
-		return
+	for w.IsActive {
+		w.drained.Wait()
 	}
-	// advise worker to notify when done
-	w.isDraining = true
-	w.mu.Unlock()
-
-	<-w.drainComplete
-	w.mu.Lock()
-	w.isDraining = false
 	w.mu.Unlock()
 }

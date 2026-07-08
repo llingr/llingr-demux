@@ -5,7 +5,9 @@ package offset
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -57,7 +59,10 @@ func Test_StartAsyncCommits_LogsCommitError(t *testing.T) {
 }
 
 // Test_AsyncCommit_CommitOffsetsFails verifies that when commitOffsets returns
-// an error, it is logged but CommitOffsets returns nil (send_commits.go:53-54)
+// an error, it is logged AND surfaced to the caller as ErrBrokerCommitFailed.
+// (Previously the error was swallowed and CommitOffsets returned nil, which
+// made a failed final commit before a partition handoff invisible to the
+// drain; see the reset-to-zero zombie regression tests.)
 func Test_AsyncCommit_CommitOffsetsFails(t *testing.T) {
 	ctx := context.Background()
 
@@ -97,9 +102,12 @@ func Test_AsyncCommit_CommitOffsetsFails(t *testing.T) {
 	// call CommitOffsets directly
 	err := committer.CommitOffsets()
 
-	// CommitOffsets should return nil even when commitOffsets fails (it logs instead)
-	if err != nil {
-		t.Errorf("CommitOffsets() returned error %v, want nil", err)
+	// CommitOffsets must surface the broker failure to the caller
+	if !errors.Is(err, ErrBrokerCommitFailed) {
+		t.Errorf("CommitOffsets() returned %v, want ErrBrokerCommitFailed", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), commitError.Error()) {
+		t.Errorf("expected the broker error to be carried, got: %v", err)
 	}
 
 	// verify error was logged
@@ -427,22 +435,33 @@ func Test_AsyncCommit_OrphanedWorkItemAfterRevoke(t *testing.T) {
 			len(tracker.GapBuffer))
 	}
 
-	// verify warning was logged with exact message
-	if logger.WarnCount() != 1 {
-		t.Errorf("expected 1 warning, got %d", logger.WarnCount())
+	// verify warnings were logged with exact messages: one for the Ready item and
+	// one for the gap-buffer leftovers (previously the gap item was dropped
+	// silently and never returned through the collector)
+	if logger.WarnCount() != 2 {
+		t.Errorf("expected 2 warnings (Ready + gap buffer), got %d", logger.WarnCount())
 	}
 	expectedWarn := "discarding orphaned work item for partition 0 offset 100 (partition no longer assigned)"
 	if !logger.HasWarning(expectedWarn) {
 		t.Errorf("warning message mismatch\nexpected: %q\ngot:      %v", expectedWarn, logger.Warnings())
 	}
-
-	// verify metrics were collected for the orphaned item (it was processed, just not committed)
-	metricsMu.Lock()
-	if len(metricsCollected) != 1 {
-		t.Errorf("expected 1 metric collected for orphaned item, got %d", len(metricsCollected))
+	expectedGapWarn := "discarding 1 orphaned gap-buffer item(s) for partition 0 (partition no longer assigned)"
+	if !logger.HasWarning(expectedGapWarn) {
+		t.Errorf("gap-buffer warning mismatch\nexpected: %q\ngot:      %v", expectedGapWarn, logger.Warnings())
 	}
-	if len(metricsCollected) > 0 && metricsCollected[0].Offset != 100 {
-		t.Errorf("expected metric offset 100, got %d", metricsCollected[0].Offset)
+
+	// verify metrics were collected for BOTH discarded items (they were processed,
+	// just not committed): the Ready at 100 and the gap-buffer item at 102
+	metricsMu.Lock()
+	if len(metricsCollected) != 2 {
+		t.Errorf("expected 2 metrics collected for discarded items, got %d", len(metricsCollected))
+	}
+	collectedOffsets := map[int64]bool{}
+	for _, m := range metricsCollected {
+		collectedOffsets[m.Offset] = true
+	}
+	if !collectedOffsets[100] || !collectedOffsets[102] {
+		t.Errorf("expected metrics for offsets 100 and 102, got %v", collectedOffsets)
 	}
 	metricsMu.Unlock()
 

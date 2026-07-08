@@ -6,6 +6,8 @@ package drain
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -175,6 +177,77 @@ func TestCoordinator_Drain_CommitterError(t *testing.T) {
 	}
 	if shutdown.triggeredWith == nil || shutdown.triggeredWith.Error() != "commit failed" {
 		t.Errorf("TriggerEmergencyShutdown called with %v, want 'commit failed'", shutdown.triggeredWith)
+	}
+}
+
+// overlapDetectingDrainer fails the drain contract if entered concurrently.
+type overlapDetectingDrainer struct {
+	inFlight atomic.Int32
+	overlaps atomic.Int32
+	delay    time.Duration
+}
+
+func (d *overlapDetectingDrainer) enter() {
+	if d.inFlight.Add(1) > 1 {
+		d.overlaps.Add(1)
+	}
+	time.Sleep(d.delay)
+	d.inFlight.Add(-1)
+}
+
+type overlapDetectingWorkerDrainer struct{ overlapDetectingDrainer }
+
+func (d *overlapDetectingWorkerDrainer) DrainWorkers() { d.enter() }
+
+type overlapDetectingOffsetDrainer struct{ overlapDetectingDrainer }
+
+func (d *overlapDetectingOffsetDrainer) DrainCommitter(_ *time.Timer) error {
+	d.enter()
+	return nil
+}
+func (d *overlapDetectingOffsetDrainer) CommitOffsets() error { return nil }
+
+// TestCoordinator_Drain_SerializesConcurrentCallers: a revoke's drain and a
+// shutdown's drain arrive on different goroutines. The coordinator must run
+// them back to back; overlapping entries into DrainWorkers or DrainCommitter
+// break their single-caller contracts.
+func TestCoordinator_Drain_SerializesConcurrentCallers(t *testing.T) {
+	drainer := &overlapDetectingWorkerDrainer{overlapDetectingDrainer{delay: 10 * time.Millisecond}}
+	committer := &overlapDetectingOffsetDrainer{overlapDetectingDrainer{delay: 10 * time.Millisecond}}
+	shutdown := &mockEmergencyShutdown{}
+
+	coord := &Coordinator[string]{
+		ctx:            context.Background(),
+		demux:          drainer,
+		committer:      committer,
+		circuitBreaker: shutdown,
+		drainTimeout:   time.Second,
+		logger:         mocklogger.NewNoOpLogger(),
+	}
+
+	start := make(chan struct{})
+	var drains sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		drains.Add(1)
+		go func() {
+			defer drains.Done()
+			<-start
+			if err := coord.Drain(); err != nil {
+				t.Errorf("Drain() returned error: %v", err)
+			}
+		}()
+	}
+	close(start)
+	drains.Wait()
+
+	if got := drainer.overlaps.Load(); got > 0 {
+		t.Errorf("DrainWorkers entered concurrently %d times, want 0", got)
+	}
+	if got := committer.overlaps.Load(); got > 0 {
+		t.Errorf("DrainCommitter entered concurrently %d times, want 0", got)
+	}
+	if shutdown.triggerCalls != 0 {
+		t.Errorf("TriggerEmergencyShutdown called %d times, want 0", shutdown.triggerCalls)
 	}
 }
 

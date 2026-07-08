@@ -1027,8 +1027,12 @@ func TestDrainWorkers_TokenBalanceWithOverflow(t *testing.T) {
 	// drain all workers
 	dmx.DrainWorkers()
 
-	// allow workers to complete guard release (happens after drainComplete signal)
-	time.Sleep(time.Microsecond)
+	// token release happens after the drain wakeup, outside the shard lock,
+	// so poll briefly (same pattern as the guard-only sibling test above)
+	deadline := time.Now().Add(100 * time.Millisecond)
+	for (len(h.guard) != 0 || len(h.overflowGuard) != 0) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
 
 	// all messages should be processed
 	if count := processCount.Load(); count != 4 {

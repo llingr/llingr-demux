@@ -52,10 +52,14 @@ func Test_Committer_CommitIngestChannelLen_Boundaries(t *testing.T) {
 	}
 }
 
-// Test_FlushGapBuffers_EarlyContinue_OnEmptyOrNoReady covers the
-// `tracker.Ready == nil || len(tracker.GapBuffer) == 0` early-continue
-// branch in flushGapBuffers - a partition flagged for gap advance but
-// with no Ready or no buffered entries to advance into
+// Test_FlushGapBuffers_EarlyContinue_OnEmptyOrNoReady covers the no-op paths
+// of flushGapBuffers - a partition flagged for gap advance but with nothing
+// actionable: an empty buffer (early continue), or Ready nil with a buffered
+// item that is not below the baseline (prune) and cannot initialise Ready
+// (its offset is not CommittedPlusOne and its predecessor is not the last
+// committed offset),
+// so the walk must break and leave the tracker untouched: the item is waiting
+// for its true predecessor to complete.
 func Test_FlushGapBuffers_EarlyContinue_OnEmptyOrNoReady(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -63,9 +67,15 @@ func Test_FlushGapBuffers_EarlyContinue_OnEmptyOrNoReady(t *testing.T) {
 		gapBuffer []*ports.WorkItem[string]
 	}{
 		{
-			name:      "Ready nil, buffer non-empty",
-			ready:     nil,
-			gapBuffer: []*ports.WorkItem[string]{{}},
+			// CommittedPlusOne is 10 (below): offset 12 with predecessor 10 cannot
+			// initialise Ready (12 != 10, and 10 != 10-1); left buffered untouched
+			name:  "Ready nil, buffer non-empty, cannot initialise Ready",
+			ready: nil,
+			gapBuffer: []*ports.WorkItem[string]{{
+				Message:        &nexus.Message[string]{Offset: 12},
+				Metrics:        &nexus.Metrics{},
+				PreviousOffset: 10,
+			}},
 		},
 		{
 			name:      "Ready non-nil, buffer empty",
@@ -82,9 +92,10 @@ func Test_FlushGapBuffers_EarlyContinue_OnEmptyOrNoReady(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			tracker := &OffsetsTracker[string]{
-				NeedsGapAdvance: true,
-				Ready:           tc.ready,
-				GapBuffer:       tc.gapBuffer,
+				NeedsGapAdvance:  true,
+				Ready:            tc.ready,
+				GapBuffer:        tc.gapBuffer,
+				CommittedPlusOne: 10,
 			}
 			oc := &Committer[string]{
 				offsetsByPartition: &OffsetsByPartition[string]{
@@ -96,13 +107,13 @@ func Test_FlushGapBuffers_EarlyContinue_OnEmptyOrNoReady(t *testing.T) {
 			oc.flushGapBuffers(time.Now())
 
 			if tracker.NeedsGapAdvance {
-				t.Error("NeedsGapAdvance should be cleared even on early continue")
+				t.Error("NeedsGapAdvance should be cleared even when nothing is actionable")
 			}
 			if tracker.Ready != tc.ready {
-				t.Error("Ready should be untouched on early continue")
+				t.Error("Ready should be untouched when nothing can initialise it")
 			}
 			if len(tracker.GapBuffer) != len(tc.gapBuffer) {
-				t.Errorf("GapBuffer modified on early continue: len = %d, want %d",
+				t.Errorf("GapBuffer modified: len = %d, want %d",
 					len(tracker.GapBuffer), len(tc.gapBuffer))
 			}
 		})

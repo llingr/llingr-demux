@@ -85,7 +85,7 @@ The committer runs two concurrent goroutines:
 The ingest loop processes in batches to amortise mutex access:
 
 ```go
-const readBatchSize = 250  // amortises mutex lock access
+const readBatchSize = 1000  // amortises mutex lock access
 
 for {
     select {
@@ -110,26 +110,65 @@ Each partition has an `OffsetsTracker`:
 
 ```go
 type OffsetsTracker[T any] struct {
-    Ready            *nexus.WorkItem[T]   // next offset to commit
-    CommittedPlusOne int64                // broker's expected next offset
-    GapBuffer        []*nexus.WorkItem[T] // out-of-order completions
-    Assignment       nexus.RebalanceType  // Assign or Revoke
+    Ready               *nexus.WorkItem[T]   // next offset to commit
+    CommittedPlusOne    int64                // broker's expected next offset
+    LastCommittedOffset int64                // last record committed THIS epoch, -1 when none
+    GapBuffer           []*nexus.WorkItem[T] // out-of-order completions
+    NeedsGapAdvance     bool                 // deferred sort+walk flag, consumed by the flush
+    Assignment          nexus.RebalanceType  // Assign or Revoke
 }
 ```
 
 **Ready**: The single WorkItem at the current high-watermark, awaiting the next commit tick.
-When a commit succeeds, `Ready` is collected for metrics and `CommittedPlusOne` advances.
+When a commit succeeds, `Ready` is collected for metrics, `CommittedPlusOne` advances
+(monotonically - a commit never lowers it), and `LastCommittedOffset` records the committed
+record's offset.
+
+**LastCommittedOffset**: The only anchor predecessor linkage may promote against when Ready
+is empty. `CommittedPlusOne` is a *position*, not a record: after log compaction or an
+aborted transaction the offset below a reset-derived baseline need not exist, so deriving a
+linkage anchor arithmetically (`CommittedPlusOne - 1`) would promote stale items on
+coincidence. The field is set only by an actual commit success this epoch and reset to -1
+by the rebalance assign's baseline reset (the only caller of `ResetCommittedOffsets`).
 
 **GapBuffer**: Holds WorkItems that completed out-of-order. When the gap fills, items are
 sorted and walked through to advance `Ready`.
 
 ### Gap Buffer Strategy
 
-The gap buffer uses two-phase resolution to avoid unnecessary sorting:
+The gap buffer uses flag-deferred resolution to avoid unnecessary sorting: the expensive
+sort+walk (`flushGapBuffers`) runs only for trackers whose `NeedsGapAdvance` flag is set,
+once per ingest batch and once per commit tick.
 
-1. **Quick scan**: Is the next contiguous offset present? If not, skip sort entirely
-2. **Sort and walk**: Only when advancement is possible, sort buffer and walk through
-   contiguous sequences
+The flag is set only where it can matter, by the site that knows why:
+
+- **Arrival** (Ready occupied): after a swap, a quick scan checks whether the new Ready's
+  successor is already buffered.
+- **Arrival** (Ready empty): only when the arriving item itself satisfies a
+  Ready-initialisation rule (below). Other arrivals cannot unlock the walk, and flagging
+  them made every batch-end flush sort the whole buffer while the baseline was unknown.
+- **Commit success**: Ready was consumed with items still buffered.
+- **Stale-Ready discard**: same shape, at commit time.
+- **Baseline reset** (rebalance assign): items buffered before the reset may qualify
+  against the new baseline with no further traffic ever arriving.
+
+The commit tick consumes the flag too (a flag-gated flush at the top of `CommitOffsets`):
+without that, a reset that flags pre-buffered items has no ingest batch to run the flush
+on a quiet partition, and the chain strands until the next rebalance.
+
+**Ready initialisation from the buffer**: with Ready empty, the walk promotes a buffered
+item only when it *proves* contiguity with the committed position, one of two ways:
+
+1. its offset equals `CommittedPlusOne` (the literal next offset), or
+2. its `PreviousOffset` equals `LastCommittedOffset` (predecessor linkage against the
+   record actually committed this epoch - the broker-gap case where the baseline offset
+   does not exist).
+
+An unprovable head stays buffered, waiting for its true predecessor: the committer stalls
+exactly while a hole exists and resumes exactly when it fills, never lifting past a
+missing offset (that would move the broker watermark over unprocessed work: loss, not
+duplicates). Items below the baseline are pruned as orphaned during the walk so they can
+never block the initialisation.
 
 Resizing uses 70%/300% hysteresis thresholds:
 
@@ -153,9 +192,17 @@ Each commit:
 
 1. Acquires `autoCommitGuard` (prevents concurrent commits)
 2. Locks mutex
-3. Collects all `Ready` messages across partitions
-4. Sends batch to broker
-5. On success: advances `CommittedPlusOne`, collects Ready for metrics
+3. Runs the flag-gated gap-buffer flush (see Gap Buffer Strategy)
+4. Collects all `Ready` messages across partitions (discarding orphaned trackers for
+   unassigned partitions and any stale Ready below the baseline)
+5. Sends batch to broker
+6. On success: advances `CommittedPlusOne` (never backwards), records
+   `LastCommittedOffset`, collects Ready for metrics, and flags a gap advance if items
+   remain buffered
+7. On broker failure: returns `ErrBrokerCommitFailed` (state untouched, retried next
+   tick); the drain surfaces it loudly but does not escalate - a rejection at handoff is
+   expected fencing and the uncommitted tail is an at-least-once re-read for the next
+   owner
 
 ## The Zombie Problem
 
@@ -228,21 +275,26 @@ resumes:
 // subscription_rebalance.go - during assign
 s.resetCommittedOffsetsFromRebalanceInfo(rebalanceInfo)
 
-// committer.go
-func (oc *Committer[T]) ResetCommittedOffsets(partitionOffsets map[int32]int64) {
-    oc.mu.Lock()
-    defer oc.mu.Unlock()
+// committer.go (abridged; see ResetCommittedOffsets for the full form)
+for partition, committedOffset := range partitionOffsets {
+    // a re-assign AFTER A REVOKE starts a fresh epoch: everything still in
+    // the tracker is stale and discarded (Ready AND gap buffer), gated on
+    // the revoke stamp MarkPartitionRevoked left on the tracker
+    if tracker.Assignment == nexus.Revoke { /* discard Ready + buffer as orphans */ }
 
-    for partition, committedOffset := range partitionOffsets {
-        tracker.CommittedPlusOne = committedOffset
-        // Also reject any Ready zombie that's now behind
-        if tracker.Ready != nil && tracker.Ready.Message.Offset < committedOffset {
-            oc.returnMessageAndCollectMetrics(tracker.Ready, now)
-            tracker.Ready = nil
-        }
-    }
+    // otherwise reject only a Ready that is now behind the new baseline
+    if tracker.Ready != nil && tracker.Ready.Message.Offset < committedOffset { /* discard */ }
+
+    tracker.CommittedPlusOne = committedOffset
+    tracker.LastCommittedOffset = -1 // nothing committed this epoch yet
+    tracker.Assignment = nexus.Assign
+    tracker.NeedsGapAdvance = len(tracker.GapBuffer) > 0
 }
 ```
+
+An adapter that cannot supply the real committed offset passes `-1` (unknown), never `0`:
+zero is an achievable offset, and a zero baseline silently disarms the comparisons in
+Layers 2-4.
 
 ### Layer 3: First Flag Protection
 
@@ -284,25 +336,30 @@ The `assigned` map tracks which partitions are currently owned by this consumer.
 `CommitOffsets()`, any Ready items for partitions not in this map are discarded:
 
 ```go
-// send_commits.go - during CommitOffsets()
+// send_commits.go - during CommitOffsets(), BEFORE the Ready-nil skip so
+// gap-buffer leftovers are cleaned even when no Ready exists
 for partition, offsetTracker := range oc.offsetsByPartition.PartitionMap {
     if _, ok := oc.assigned[partition]; !ok {
-        // orphaned work item - partition no longer assigned
-        oc.logger.Warn(ctx, "discarding orphaned work item for partition %d offset %d "+
-            "(partition no longer assigned)", partition, workItem.Message.Offset)
-        oc.returnMessageAndCollectMetrics(workItem, now)
-        offsetTracker.Ready = nil
-        offsetTracker.GapBuffer = offsetTracker.GapBuffer[:0]
+        // discardOrphanedTracker: Ready AND every buffered item are marked
+        // orphaned and returned through metrics (work-item accounting), the
+        // buffer is cleared, the gap-advance flag reset
+        oc.discardOrphanedTracker(partition, offsetTracker)
         continue
     }
+    // ... stale-Ready guard, then:
     commits = append(commits, workItem.Message)
 }
 ```
 
 The map is updated during rebalance:
 
-- `MarkPartitionAssigned(partition)` - called after ResetCommittedOffsets during Assign
-- `MarkPartitionRevoked(partition)` - called after ackRebalance during Revoke
+- `MarkPartitionAssigned(partition)` - called after ResetCommittedOffsets during Assign,
+  BEFORE the ack
+- `MarkPartitionRevoked(partition)` - called after the drain during Revoke, BEFORE the
+  ack (marking after the ack is the ordering the TLA+ model proved unsafe: a commit tick
+  in that window can commit a stale Ready and regress the broker). It also stamps
+  `Assignment = Revoke` on the tracker, which is what gates the next assign's
+  stale-epoch clear in Layer 2.
 
 This matches the TLA+ model's `assignment = "Assigned"` guard on the `CommitReady` action.
 See `COMMIT_GUARD_ANALYSIS.md` for the full analysis of this protection mechanism.
@@ -364,13 +421,13 @@ But "essentially never" isn't "never", and correctness demands handling the edge
 
 ## Related Code
 
-- `offsets_tracker.go` - `OffsetsTracker` struct with `CommittedPlusOne` field
-- `committer.go` - `ResetCommittedOffsets()` method, `NewCommitter()`
+- `offsets_tracker.go` - `OffsetsTracker` struct: `CommittedPlusOne`, `LastCommittedOffset`
+- `committer.go` - `ResetCommittedOffsets()`, `MarkPartitionAssigned/Revoked()`, `NewCommitter()`
 - `committer_ingest.go` - `startIngestLoop()`, `CollectAndCommit()`
-- `committer_process.go` - `processCommit()`, `checkAndAdvance()`, gap buffer logic
-- `send_commits.go` - `startAsyncCommits()`, `CommitOffsets()`
+- `committer_process.go` - `processCommit()`, `checkAndAdvance()`, `flushGapBuffers()`
+- `send_commits.go` - `startAsyncCommits()`, `CommitOffsets()`, `discardOrphanedTracker()`
 - `committer_drain.go` - `DrainCommitter()` for rebalance coordination
-- `commit_history.go` - Ring buffer for commit event tracking
+- `committer_metrics.go` - Ring buffer for commit observability windows
 - `../pipeline/prev/` - `PartitionOffsets` for polling boundary validation
 
 ### Tests
@@ -378,4 +435,15 @@ But "essentially never" isn't "never", and correctness demands handling the edge
 - `committer_process_test.go` - Happy path, CommittedPlusOne guards, Ready advancement
 - `committer_process_missing_offsets_test.go` - Log compaction, transaction gaps
 - `committer_process_duplicates_test.go` - Duplicate handling
-- `committer_zombie_race_test.go` - Zombie scenarios, race condition verification
+- `committer_orphaned_race_test.go` - Orphaned work item scenarios, race verification
+- `committer_reset_zero_orphan_test.go` - Unknown/zero baselines, stale epoch state,
+  backward-commit and broker-error surfacing guards
+- `committer_gap_stall_test.go` - Ready re-initialisation from the buffer: broker-gap
+  commit boundaries, tick-alone re-initialisation, recorded-commit linkage (never
+  baseline arithmetic), and never advancing past a missing offset
+- `committer_fetch_discontinuity_test.go` - Fetch-position jumps without a rebalance
+- `committer_drain_handshake_test.go` - Drain vs live ingest handshake
+- `committer_model_test.go` / `committer_model_fuzz_test.go` - Model-based randomized
+  interleavings and fuzz over the same harness, six named invariants
+- `../../tests/stutter_test.go` - Universally strided offsets with producer quiet windows
+  (every commit boundary non-contiguous, ticks against a silent pipeline)

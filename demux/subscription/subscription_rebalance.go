@@ -17,9 +17,24 @@ const defaultPausePollingTimeout = 10 * time.Second
 
 var pausePollingTimeout = defaultPausePollingTimeout
 
+const foreignTopicRebalance = "rebalance rejected: topic %q does not match this consumer's topic %q - " +
+	"a consumer serves exactly one topic (offset tracking is keyed by partition alone, so a second " +
+	"topic would cross-contaminate committed offsets); use one consumer per topic"
+
 // HandleRebalance processes partition assignment and revocation events from the broker.
 func (s *Subscription[T]) HandleRebalance(rebalanceType nexus.RebalanceType,
 	rebalanceInfo []nexus.RebalanceInfo) (err error) {
+
+	// Single-topic contract (see README): reject the whole event before any
+	// state is touched. Empty TopicName is unspecified, not foreign.
+	for _, r := range rebalanceInfo {
+		if r.TopicName != "" && r.TopicName != s.topicName {
+			err = fmt.Errorf(foreignTopicRebalance, r.TopicName, s.topicName)
+			s.logger.Error(s.ctx, err.Error())
+			s.circuitBreaker.TriggerEmergencyShutdown(err)
+			return err
+		}
+	}
 
 	switch rebalanceType {
 	case nexus.Assign:
