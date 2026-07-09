@@ -69,6 +69,7 @@ func (oc *Committer[T]) DrainCommitter(timer *time.Timer) error {
 // membership is already gone) into an emergency shutdown. Non-broker errors
 // (e.g. the commit-guard timeout) still propagate.
 func (oc *Committer[T]) surfaceFinalCommit() error {
+	oc.logger.Debug(oc.ctx, "drain: sending final commit")
 	err := oc.CommitOffsets()
 	if err == nil {
 		return nil

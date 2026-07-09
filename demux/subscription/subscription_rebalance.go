@@ -6,6 +6,7 @@ package subscription
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/llingr/llingr-nexus/nexus"
@@ -35,6 +36,19 @@ func (s *Subscription[T]) HandleRebalance(rebalanceType nexus.RebalanceType,
 			return err
 		}
 	}
+
+	// Bracket the handling with start/finish logs: rebalances are rare and
+	// these lines are the forensic anchors for correlating throughput dips,
+	// drain durations, and duplicate bursts with ownership changes. The assign
+	// line includes each partition's committed baseline as delivered by the
+	// adapter (-1 = unknown: lookup disabled, failed, or nothing committed).
+	started := time.Now()
+	s.logger.Info(s.ctx, fmt.Sprintf("rebalance %s starting: %s",
+		rebalanceTypeName(rebalanceType), describeRebalanceInfo(rebalanceType, rebalanceInfo)))
+	defer func() {
+		s.logger.Info(s.ctx, fmt.Sprintf("rebalance %s finished in %s",
+			rebalanceTypeName(rebalanceType), time.Since(started)))
+	}()
 
 	switch rebalanceType {
 	case nexus.Assign:
@@ -86,6 +100,38 @@ func (s *Subscription[T]) HandleRebalance(rebalanceType nexus.RebalanceType,
 	}
 
 	return err
+}
+
+// rebalanceTypeName renders a RebalanceType for the bracket logs.
+func rebalanceTypeName(t nexus.RebalanceType) string {
+	switch t {
+	case nexus.Assign:
+		return "assign"
+	case nexus.Revoke:
+		return "revoke"
+	default:
+		return fmt.Sprintf("type(%d)", t)
+	}
+}
+
+// describeRebalanceInfo renders the event's partitions for the bracket logs:
+// assigns as partition:baseline pairs ("[0:5210 6:-1]", -1 = unknown), revokes
+// as a plain partition list ("[6 11]").
+func describeRebalanceInfo(t nexus.RebalanceType, info []nexus.RebalanceInfo) string {
+	var b strings.Builder
+	_, _ = fmt.Fprintf(&b, "%d partition(s) [", len(info))
+	for i, r := range info {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		if t == nexus.Assign {
+			_, _ = fmt.Fprintf(&b, "%d:%d", r.Partition, r.CommittedOffset)
+		} else {
+			_, _ = fmt.Fprintf(&b, "%d", r.Partition)
+		}
+	}
+	b.WriteByte(']')
+	return b.String()
 }
 
 // DrainBehaviour controls how the subscription coordinates with the polling loop during drain.

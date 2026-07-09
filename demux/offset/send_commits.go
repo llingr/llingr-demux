@@ -4,8 +4,11 @@
 package offset
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/llingr/llingr-nexus/nexus"
@@ -100,12 +103,22 @@ func (oc *Committer[T]) CommitOffsets() error {
 
 			commits = append(commits, workItem.Message)
 		}
+
 		if len(commits) > 0 {
+			const sendingCommit = "sending commit: %s"
+			oc.logger.Debug(oc.ctx, fmt.Sprintf(sendingCommit, describeCommits(commits)))
+			started := time.Now()
+
 			_, err := oc.commitOffsets(commits)
 			if err != nil {
 				oc.logger.Error(oc.ctx, fmt.Sprintf("failed to commit offset(s) - %v", err))
 				return fmt.Errorf("%w: %v", ErrBrokerCommitFailed, err)
 			}
+
+			const brokerCommitAck = "broker acknowledged commit of %d partition(s) in %s"
+			took := time.Since(started).Truncate(time.Microsecond)
+			oc.logger.Debug(oc.ctx, fmt.Sprintf(brokerCommitAck, len(commits), took))
+
 			for _, message := range commits {
 				offsetTracker := oc.offsetsByPartition.PartitionMap[message.Partition]
 				// never move the baseline backwards: a commit of an older offset must
@@ -134,6 +147,27 @@ func (oc *Committer[T]) CommitOffsets() error {
 		acquireGuardFailed := "failed to acquire commit guard after %s"
 		return fmt.Errorf(acquireGuardFailed, oc.acquireCommitGuardTimeout)
 	}
+}
+
+// describeCommits commit batch's per-partition
+// offsets as "[p0:31930 p1:31738 p7:87193]"
+func describeCommits[T any](commits []*nexus.Message[T]) string {
+	sorted := make([]*nexus.Message[T], len(commits))
+	copy(sorted, commits)
+	slices.SortFunc(sorted, func(a, b *nexus.Message[T]) int {
+		return cmp.Compare(a.Partition, b.Partition)
+	})
+
+	var b strings.Builder
+	b.WriteByte('[')
+	for i, message := range sorted {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		_, _ = fmt.Fprintf(&b, "p%d:%d", message.Partition, message.Offset)
+	}
+	b.WriteByte(']')
+	return b.String()
 }
 
 // discardOrphanedTracker drops a no-longer-assigned partition's pending state:
