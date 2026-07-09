@@ -80,8 +80,8 @@ func TestNewWorker_InitialisesCorrectly(t *testing.T) {
 	if worker.logger != logger {
 		t.Error("expected logger to be set")
 	}
-	if worker.drainComplete == nil {
-		t.Error("expected drainComplete channel to be initialised")
+	if worker.drained == nil {
+		t.Error("expected drained condition to be initialised")
 	}
 	if worker.shutdown == nil {
 		t.Error("expected shutdown channel to be initialised")
@@ -362,6 +362,51 @@ func TestTriggerCircuitBreaker_TriggersShutdown(t *testing.T) {
 	}
 }
 
+// Test_DeadLetterFailure_TriggersBreakerAndNeverCommits: when processing fails
+// AND the dead-letter write fails, the work item's offset must NOT be
+// committed (committing would silently lose the message) and the circuit
+// breaker must fire. Pins the full processWorkItem path, not the helpers.
+func Test_DeadLetterFailure_TriggersBreakerAndNeverCommits(t *testing.T) {
+	workerShard := testWorkerShard[string]()
+	guard := make(chan struct{}, 1)
+	guard <- struct{}{}
+	logger := mocklogger.NewRecordingLogger()
+
+	worker := NewWorker[string](workerShard, 4, guard, nil, logger)
+
+	worker.processMessage = func(_ context.Context, _ *nexus.Message[string]) error {
+		return errors.New("processing failed")
+	}
+	worker.deadLetter = deadletter.New[string](
+		func(_ context.Context, _ *nexus.Message[string], _ error) error {
+			return errors.New("dead letter write failed")
+		}, logger)
+	worker.circuitBreaker = circuitbreaker.New(context.Background(), logger)
+
+	var commits atomic.Int32
+	worker.collectAndCommit = func(_ *ports.WorkItem[string]) { commits.Add(1) }
+	worker.returnWorker = func(_ *Worker[string]) {}
+	workerShard.workers["key-1"] = worker
+
+	go worker.startProcessingWorkItems()
+	worker.workItems <- newTestWorkItem[string](0, 100, "key-1", "payload")
+
+	select {
+	case reason := <-worker.circuitBreaker.Triggered():
+		if reason == "" {
+			t.Error("expected a non-empty circuit breaker reason")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("dead-letter failure did not trigger the circuit breaker")
+	}
+
+	if got := commits.Load(); got != 0 {
+		t.Errorf("collectAndCommit called %d time(s) for an uncommittable message, want 0", got)
+	}
+
+	close(worker.shutdown)
+}
+
 // --- Drain tests ---
 
 func TestDrain_WhenWorkerIsInactive_ReturnsImmediately(t *testing.T) {
@@ -392,42 +437,82 @@ func TestDrain_WhenWorkerIsActive_WaitsForDrainComplete(t *testing.T) {
 	worker := NewWorker[string](workerShard, 16, nil, nil, logger)
 	worker.IsActive = true
 
-	drainStarted := make(chan struct{})
 	drainFinished := make(chan struct{})
-
 	go func() {
-		close(drainStarted)
 		worker.Drain()
 		close(drainFinished)
 	}()
 
-	<-drainStarted
-	time.Sleep(10 * time.Millisecond) // give Drain time to set isDraining
-
-	// verify isDraining is set
-	worker.mu.Lock()
-	if !worker.isDraining {
-		worker.mu.Unlock()
-		t.Error("expected isDraining to be true")
+	// Drain must still be waiting while the worker is active
+	select {
+	case <-drainFinished:
+		t.Fatal("Drain returned while the worker was still active")
+	case <-time.After(20 * time.Millisecond):
 	}
-	worker.mu.Unlock()
 
-	// signal drain complete
-	worker.drainComplete <- struct{}{}
+	// the worker's self-removal step: deactivate then broadcast, under mu
+	worker.mu.Lock()
+	worker.IsActive = false
+	worker.drained.Broadcast()
+	worker.mu.Unlock()
 
 	select {
 	case <-drainFinished:
 		// success
 	case <-time.After(100 * time.Millisecond):
-		t.Error("Drain should complete after drainComplete signal")
+		t.Error("Drain should complete after the drained broadcast")
+	}
+}
+
+// Test_Drain_MultipleConcurrentWaiters: a shutdown's drain and a revoke's drain
+// can overlap on different goroutines. Every concurrent Drain() on the same
+// worker must return once it empties; a lost wakeup here turns a graceful stop
+// into a coordinator timeout.
+func Test_Drain_MultipleConcurrentWaiters(t *testing.T) {
+	workerShard := testWorkerShard[string]()
+	guard := make(chan struct{}, 1)
+	guard <- struct{}{}
+	logger := mocklogger.NewRecordingLogger()
+
+	worker := NewWorker[string](workerShard, 4, guard, nil, logger)
+
+	release := make(chan struct{})
+	worker.processMessage = func(_ context.Context, _ *nexus.Message[string]) error {
+		<-release
+		return nil
+	}
+	worker.collectAndCommit = func(_ *ports.WorkItem[string]) {}
+	worker.returnWorker = func(_ *Worker[string]) {}
+	workerShard.workers["key-1"] = worker
+
+	go worker.startProcessingWorkItems()
+	worker.workItems <- newTestWorkItem[string](0, 100, "key-1", "payload")
+
+	var waiters sync.WaitGroup
+	waiters.Add(2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			defer waiters.Done()
+			worker.Drain()
+		}()
 	}
 
-	// verify isDraining is reset
-	worker.mu.Lock()
-	if worker.isDraining {
-		t.Error("expected isDraining to be false after Drain completes")
+	time.Sleep(20 * time.Millisecond) // let both waiters register before the worker empties
+	close(release)
+
+	drainDone := make(chan struct{})
+	go func() {
+		waiters.Wait()
+		close(drainDone)
+	}()
+
+	select {
+	case <-drainDone:
+	case <-time.After(2 * time.Second):
+		t.Error("a concurrent Drain waiter never woke after the worker emptied")
 	}
-	worker.mu.Unlock()
+
+	close(worker.shutdown)
 }
 
 // --- startProcessingWorkItems tests ---

@@ -27,11 +27,12 @@ func (oc *Committer[T]) processCommit(workItem *ports.WorkItem[T], now time.Time
 	offsetTracker, ok := oc.offsetsByPartition.PartitionMap[partition]
 	if !ok {
 		offsetTracker = &OffsetsTracker[T]{
-			CommittedPlusOne: -1,
-			Assignment:       nexus.Assign,
-			MinOffsetSeen:    offset,
-			MaxOffsetSeen:    offset,
-			GapBuffer:        make([]*ports.WorkItem[T], 0, oc.gapBufferSize),
+			CommittedPlusOne:    -1,
+			LastCommittedOffset: -1,
+			Assignment:          nexus.Assign,
+			MinOffsetSeen:       offset,
+			MaxOffsetSeen:       offset,
+			GapBuffer:           make([]*ports.WorkItem[T], 0, oc.gapBufferSize),
 		}
 		oc.offsetsByPartition.PartitionMap[partition] = offsetTracker
 	} else {
@@ -89,6 +90,23 @@ func (oc *Committer[T]) checkAndAdvance(offsetsTracker *OffsetsTracker[T],
 		default:
 			// pend in gap buffer
 			oc.addToGapBuffer(offsetsTracker, workItem)
+			// With Ready empty, an arrival that satisfies a Ready-initialization
+			// rule (its offset is the baseline, or its predecessor is the record
+			// committed this epoch - the broker-gap case where the baseline
+			// offset does not exist) must ask the batch-end flush to
+			// re-initialize Ready from the buffer, or the partition stalls
+			// permanently: commits stop and the buffer grows without bound.
+			// Other arrivals never flag: they cannot unlock the walk, and
+			// flagging them made every batch-end flush sort the whole buffer
+			// while the baseline was still unknown. Baseline CHANGES that could
+			// qualify already-buffered items set the flag at their own sites:
+			// the commit success path, the stale-Ready discard, and
+			// ResetCommittedOffsets.
+			if offset == offsetsTracker.CommittedPlusOne ||
+				(offsetsTracker.LastCommittedOffset >= 0 &&
+					workItem.PreviousOffset == offsetsTracker.LastCommittedOffset) {
+				offsetsTracker.NeedsGapAdvance = true
+			}
 		}
 
 	} else {
@@ -155,22 +173,60 @@ func (oc *Committer[T]) flushGapBuffers(now time.Time) {
 		}
 		tracker.NeedsGapAdvance = false
 
-		if tracker.Ready == nil || len(tracker.GapBuffer) == 0 {
+		if len(tracker.GapBuffer) == 0 {
 			continue
 		}
 
 		oc.sortGapBuffer(tracker)
-		readyOffset := tracker.Ready.Message.Offset
 		advancedOffsetIndex := -1
+	walk:
 		for i, g := range tracker.GapBuffer {
-			if readyOffset == g.PreviousOffset {
+			switch {
+			case tracker.Ready == nil && g.Message.Offset < tracker.CommittedPlusOne:
+				// below the baseline with Ready empty: a leftover that can never
+				// commit; prune it as orphaned so it cannot block the
+				// re-initialization below
+				nexus.SetOrphaned(&g.Metrics.Traits)
+				g.Metrics.WatermarkAdvanceTime = now
+				oc.returnMessageAndCollectMetrics(g)
+				advancedOffsetIndex = i
+			case tracker.Ready == nil && (g.Message.Offset == tracker.CommittedPlusOne ||
+				(tracker.LastCommittedOffset >= 0 &&
+					g.PreviousOffset == tracker.LastCommittedOffset)):
+				// Re-initialize Ready from the buffer. With Ready consumed (by a
+				// commit or a stale-Ready discard), an arriving completion can no
+				// longer initialize it when the expected next offset was skipped on
+				// the broker or has already arrived and is in the buffer.
+				// Without this, the commits for the partition would stall.
+				// Initialization uses the arrival rule (offset == CommittedPlusOne)
+				// with the same predecessor linkage the live swap path uses - predecessor
+				// is the last committed offset - so ordering invariants are unchanged.
+				tracker.Ready = g
+				g.Metrics.WatermarkAdvanceTime = now
+				advancedOffsetIndex = i
+			case tracker.Ready == nil:
+				// nothing qualifies yet: the true successor has not completed.
+				// Linkage broken by log compaction across ownership epochs is
+				// repaired at commit cadence instead (see repairSuccessor),
+				// never on this batch path.
+				break walk
+			case g.Message.Offset <= tracker.Ready.Message.Offset:
+				// at or below the watermark: an orphan buffered while the baseline was
+				// unknown (the adapter could not supply the broker position at assign).
+				// It can never link and, sorted to the front, would break this walk on
+				// every flush, silently stalling commits for the rest of the epoch.
+				// Prune it as orphaned instead.
+				nexus.SetOrphaned(&g.Metrics.Traits)
+				g.Metrics.WatermarkAdvanceTime = now
+				oc.returnMessageAndCollectMetrics(g)
+				advancedOffsetIndex = i
+			case tracker.Ready.Message.Offset == g.PreviousOffset:
 				oc.returnMessageAndCollectMetrics(tracker.Ready)
 				tracker.Ready = g
 				g.Metrics.WatermarkAdvanceTime = now
-				readyOffset = g.Message.Offset
 				advancedOffsetIndex = i
-			} else {
-				break
+			default:
+				break walk
 			}
 		}
 
@@ -200,7 +256,12 @@ func (oc *Committer[T]) sortGapBuffer(offsetsTracker *OffsetsTracker[T]) {
 			return 1
 		}
 		foundDuplicate = true
-		return 0
+		// equal offsets are cross-epoch twins (impossible within one fetch
+		// stream) and their predecessor stamps are not interchangeable: order
+		// the later-read twin first so the compact keeps the current epoch's
+		// stamp. SortFunc is not stable, so equal elements must never be left
+		// for it to order; CompactFunc keeps the first of each equal run.
+		return b.Metrics.ReadTime.Compare(a.Metrics.ReadTime)
 	})
 
 	// amortized de-dupe

@@ -65,6 +65,10 @@ func (b *slamBroker) Subscribe() error {
 			b.rebalanceFunc()
 			close(b.subscribeCalled)
 		}()
+	} else {
+		// nothing to wait for: unblock delivery immediately so the Poll gate
+		// cannot starve a subscriber that configured no rebalance callback
+		close(b.subscribeCalled)
 	}
 	return nil
 }
@@ -75,9 +79,15 @@ func (b *slamBroker) Unsubscribe() error {
 }
 
 func (b *slamBroker) Poll(timeout time.Duration) (slamMessage, bool, error) {
+	// No delivery before the assignment is processed: real broker clients only
+	// fetch after assignment. Early delivery races the first commit tick, whose
+	// ownership guard discards the completions; this mock never redelivers, so
+	// the offset chain would break permanently (latent flake this gate closes).
 	select {
 	case <-b.subscribeCalled:
 	default:
+		time.Sleep(timeout)
+		return slamMessage{}, false, nil
 	}
 
 	idx := int(b.pollIndex.Add(1) - 1)
@@ -142,15 +152,25 @@ func (b *slamBroker) getCommitResults() (history []commitRecord, highest map[int
 
 // generateSlamMessages creates N messages with K distinct keys on partition 0.
 // Keys are distributed round-robin: key-0, key-1, ..., key-(K-1), key-0, ...
+//
+// EVERY offset jumps by five (0, 5, 10, ...), the non-contiguous shape of
+// compacted topics and aborted transactions: no record is predecessor+1, so
+// any "+1" offset arithmetic in the commit path breaks on the first record.
+// Contiguity must come from predecessor linkage, and a commit tick that
+// consumes Ready must not stall the committer (the successor's completion can
+// never equal CommittedPlusOne, so Ready must be re-initialised from the gap
+// buffer).
 func generateSlamMessages(n, k int) []slamMessage {
 	msgs := make([]slamMessage, n)
+	offset := int64(0)
 	for i := 0; i < n; i++ {
 		msgs[i] = slamMessage{
 			ID:        i,
 			Key:       fmt.Sprintf("key-%d", i%k),
 			Partition: 0,
-			Offset:    int64(i),
+			Offset:    offset,
 		}
+		offset += 5
 	}
 	return msgs
 }
@@ -192,18 +212,22 @@ func TestSlamWild(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Generate 2M messages spread across 12 partitions with 500 random keys
+	// Generate 2M messages spread across 12 partitions with 500 random keys.
+	// Every offset jumps by five (compaction / aborted transactions): no
+	// record is predecessor+1 on any partition.
 	messages := make([]slamMessage, totalMessages)
-	partitionCounters := make([]int64, numPartitions)
+	partitionOffsets := make([]int64, numPartitions)
+	highestOffset := make([]int64, numPartitions)
 	for i := 0; i < totalMessages; i++ {
 		p := int32(i % numPartitions)
 		messages[i] = slamMessage{
 			ID:        i,
 			Key:       fmt.Sprintf("key-%d", rand.Intn(numKeys)),
 			Partition: p,
-			Offset:    partitionCounters[p],
+			Offset:    partitionOffsets[p],
 		}
-		partitionCounters[p]++
+		highestOffset[p] = partitionOffsets[p]
+		partitionOffsets[p] += 5
 	}
 
 	broker := newSlamBroker(messages)
@@ -299,9 +323,10 @@ func TestSlamWild(t *testing.T) {
 	// --- Assertions ---
 	history, highest, hasDuplicate := broker.getCommitResults()
 
-	// 1. Every partition's final offset matches expected
+	// 1. Every partition's final offset matches the last generated offset
+	// (offsets are strided, so take it from the stream, not a count)
 	for p := int32(0); p < numPartitions; p++ {
-		expected := partitionCounters[p] - 1
+		expected := highestOffset[p]
 		if got, ok := highest[p]; !ok {
 			t.Errorf("partition %d: no commits recorded", p)
 		} else if got != expected {
@@ -433,7 +458,8 @@ func runSlamScenario(t *testing.T, numKeys, numMessages int) {
 	history, highest, hasDuplicate := broker.getCommitResults()
 
 	// 1. Final committed offset must equal highest offset in partition
-	expectedHighest := int64(numMessages - 1)
+	// (offsets are gapped, so take it from the generated stream, not numMessages-1)
+	expectedHighest := messages[len(messages)-1].Offset
 	if got, ok := highest[0]; !ok {
 		t.Errorf("partition 0: no commits recorded")
 	} else if got != expectedHighest {

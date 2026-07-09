@@ -16,6 +16,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/llingr/llingr-demux/demux/circuitbreaker"
@@ -55,6 +56,7 @@ type Coordinator[T any] struct {
 	circuitBreaker emergencyShutdown
 	drainTimeout   time.Duration
 	logger         nexus.Logger
+	mu             sync.Mutex // serializes Drain: a revoke's drain can overlap a shutdown's
 }
 
 // NewDrainCoordinator creates a coordinator for graceful pipeline shutdown.
@@ -75,8 +77,17 @@ func NewDrainCoordinator[T any](
 	}
 }
 
-// Drain waits for all in-flight messages to complete and commit
+// Drain waits for all in-flight messages to complete and commit.
+//
+// Serialized: the revoke and shutdown paths can both drain concurrently
+// (adapter callback goroutine vs app goroutine). Overlapping drains would
+// double-drain workers and race for the committer's single drained token,
+// turning a graceful stop into a spurious drain timeout. A queued drain
+// acquires the lock before its timer starts, keeping its full budget.
 func (c *Coordinator[T]) Drain() (err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	timeoutTimer := time.NewTimer(c.drainTimeout)
 	defer func() {
 		timeoutTimer.Stop()

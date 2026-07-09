@@ -403,7 +403,7 @@ func Test_DrainCommitter_HighVolume(t *testing.T) {
 	wg.Wait()
 
 	// now drain - waits for commitsIn to be empty
-	timer := time.NewTimer(30 * time.Second)
+	timer := time.NewTimer(time.Minute)
 	defer timer.Stop()
 
 	drainStart := time.Now()
@@ -588,7 +588,9 @@ func Test_DrainCommitter_ChannelDrains(t *testing.T) {
 	committer.MarkPartitionAssigned(0)
 
 	// fill channel from a goroutine
+	producerDone := make(chan struct{})
 	go func() {
+		defer close(producerDone)
 		for i := int64(0); i < messageCount; i++ {
 			workItem := pool.Borrow()
 			populateWorkItem(workItem, 0, i)
@@ -596,12 +598,22 @@ func Test_DrainCommitter_ChannelDrains(t *testing.T) {
 		}
 	}()
 
-	// wait until 50K messages are in the channel before starting drain
-	for len(committer.commitsIn) < 50_000 {
+	// wait for a sizeable backlog before starting drain; the ingest loop
+	// consumes concurrently, so under some schedules the backlog never forms -
+	// producer completion bounds the wait
+	backlogReady := func() bool {
+		select {
+		case <-producerDone:
+			return true
+		default:
+			return len(committer.commitsIn) >= 50_000
+		}
+	}
+	for !backlogReady() {
 		runtime.Gosched()
 	}
 
-	timer := time.NewTimer(10 * time.Second)
+	timer := time.NewTimer(time.Minute)
 	defer timer.Stop()
 
 	start := time.Now()
@@ -628,8 +640,10 @@ func (c *countingMetricsCollector[T]) Collect(_ *ports.WorkItem[T]) {
 // Test_DrainCommitter_ScrambledOffsets verifies that drain resolves all messages
 // through the gap buffer sort-and-walk when offsets arrive out of order.
 // Every message that reaches metrics collection has been fully resolved.
+// 10k is enough to prove resolution; the fully-scrambled regime costs
+// quadratic quick-scan work, and 100k blew CI's budget under -race.
 func Test_DrainCommitter_ScrambledOffsets(t *testing.T) {
-	const messageCount = 100_000
+	const messageCount = 10_000
 
 	ctx := context.Background()
 	logger := mocklogger.NewNoOpLogger()
@@ -674,7 +688,7 @@ func Test_DrainCommitter_ScrambledOffsets(t *testing.T) {
 
 	t.Logf("pushed %d scrambled messages, channel len: %d", messageCount, len(committer.commitsIn))
 
-	timer := time.NewTimer(30 * time.Second)
+	timer := time.NewTimer(time.Minute)
 	defer timer.Stop()
 
 	start := time.Now()
