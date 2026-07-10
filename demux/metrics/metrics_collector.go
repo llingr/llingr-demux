@@ -158,6 +158,7 @@ func (c *Collector[T]) sendToMetricsSink(workItem *ports.WorkItem[T], metricsSin
 	metrics.WorkerPool = workItem.WorkerPool
 	metrics.Partition = message.Partition
 	metrics.Offset = message.Offset
+	metrics.Traits |= message.Traits & nexus.FrameworkReserved
 	metrics.AddCustomTraits(message.Traits)
 
 	defer func() {

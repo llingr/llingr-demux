@@ -128,6 +128,71 @@ func Test_CollectorHappyPath(t *testing.T) {
 	mu.Unlock()
 }
 
+// Test_Collector_ForwardsMessageFrameworkTraits confirms the sink receives
+// the failure flags the worker records on Message.Traits (ProcessError,
+// DeadLetter), alongside metrics-side flags and application bits.
+func Test_Collector_ForwardsMessageFrameworkTraits(t *testing.T) {
+	cfg := config.DemuxConfig{}
+	ctx := context.Background()
+	logger := nexus.NewDefaultLogger(slog.LevelInfo)
+	pool := alloc.NewWorkItemsPool[string](cfg)
+
+	var mu sync.Mutex
+	var captured []nexus.Metrics
+	metricsSink := func(_ nexus.SinkContext, m nexus.Metrics) error {
+		mu.Lock()
+		captured = append(captured, m)
+		mu.Unlock()
+		return nil
+	}
+
+	collector := NewCollector[string](ctx, cfg, metricsSink, nexus.SinkContext{}, pool, logger)
+	collector.StartCollectingMetrics()
+
+	const customBit nexus.Traits = 1 << 12
+
+	workItem := pool.Borrow()
+	// What the worker records on the message for a failed, dead-lettered
+	// record that also carries an application trait.
+	nexus.SetProcessError(&workItem.Message.Traits)
+	nexus.SetDeadLetter(&workItem.Message.Traits)
+	workItem.Message.AddCustomTraits(customBit)
+	// What the pipeline records directly on the metrics.
+	nexus.SetCommitBuffered(&workItem.Metrics.Traits)
+	collector.Collect(workItem)
+
+	for i := 0; i < 5000; i++ {
+		runtime.Gosched()
+		if collector.CollectedCount.Load() == 1 {
+			break
+		}
+		time.Sleep(50 * time.Microsecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(captured) != 1 {
+		t.Fatalf("expected 1 captured metric, got %d", len(captured))
+	}
+	got := captured[0].Traits
+	for _, expect := range []struct {
+		name string
+		flag nexus.Traits
+	}{
+		{"ProcessError", nexus.ProcessError},
+		{"DeadLetter", nexus.DeadLetter},
+		{"CommitBuffered", nexus.CommitBuffered},
+		{"custom bit 12", customBit},
+	} {
+		if got&expect.flag == 0 {
+			t.Errorf("sink-received traits missing %s: 0x%x", expect.name, got)
+		}
+	}
+	if got&nexus.Duplicate != 0 {
+		t.Errorf("Duplicate must not appear unset: 0x%x", got)
+	}
+}
+
 // Test_CalculateCollectBufferSize confirms
 // buffer size is always between 20k and 100k
 func Test_CalculateCollectBufferSize(t *testing.T) {
