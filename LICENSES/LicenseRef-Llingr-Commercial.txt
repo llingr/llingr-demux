@@ -1,0 +1,9 @@
+Llingr Commercial Licence
+
+Commercial use of this software is governed solely by a commercial
+licence agreement executed between the licensee organisation and
+Llingr Software Ltd. Agreements are executed individually; the terms
+are provided on request.
+
+For proprietary or closed-source applications, for SaaS/cloud service
+providers, and for evaluation licences, contact license@llingr.io.

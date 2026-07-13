@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 The llingr-demux Authors
-// SPDX-License-Identifier: AGPL-3.0
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Llingr-Commercial
 //
 // Implementation of FNV-1a hash algorithm (the algorithm itself is in the public domain).
 

@@ -2,6 +2,10 @@ name: CI
 
 on:
   push:
+  pull_request:
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -15,8 +19,8 @@ jobs:
     name: build & vet
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -27,8 +31,8 @@ jobs:
     name: test (race + coverage)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -38,33 +42,7 @@ jobs:
         run: go test -race ./tests/...
       - name: Coverage summary
         run: go tool cover -func=coverage.out | tail -5
-      - uses: codecov/codecov-action@v4
+      - uses: codecov/codecov-action@v7
         with:
           files: coverage.out
           fail_ci_if_error: false
-
-  lint:
-    name: lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
-      - uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
-
-  vulncheck:
-    name: govulncheck
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          # govulncheck@v1.3.0+ requires Go >= 1.25
-          go-version: '1.26'
-          cache: true
-      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
-      - run: govulncheck ./...

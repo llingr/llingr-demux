@@ -1,0 +1,13 @@
+version: 3
+project:
+  name: llingr-demux
+
+# matchCriteria is a regex over file contents. First-party license scanning
+# itself is enabled in FOSSA project/org settings, not in this file.
+customLicenseSearch:
+  # Every file header carrying the dual expression.
+  - matchCriteria: "AGPL-3\\.0-only OR LicenseRef-Llingr-Commercial"
+    name: "Llingr Dual License (AGPL / Commercial)"
+  # The commercial license body text (LICENSES/ file and license.spdx).
+  - matchCriteria: "commercial terms requires a valid commercial license agreement from Llingr Software Ltd, visit https://llingr.io"
+    name: "Llingr Commercial License"

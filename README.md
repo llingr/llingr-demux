@@ -2,9 +2,8 @@
 
 [![CI](https://github.com/llingr/llingr-demux/actions/workflows/ci.yml/badge.svg)](https://github.com/llingr/llingr-demux/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/llingr/llingr-demux.svg)](https://pkg.go.dev/github.com/llingr/llingr-demux)
-[![Go Report Card](https://goreportcard.com/badge/github.com/llingr/llingr-demux)](https://goreportcard.com/report/github.com/llingr/llingr-demux)
 [![Tag](https://img.shields.io/github/v/tag/llingr/llingr-demux)](https://github.com/llingr/llingr-demux/tags)
-[![License](https://img.shields.io/badge/License-AGPL--3.0_or_Commercial-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-Dual_Commercial%2FAGPL--3.0-blue.svg)](LICENSE)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/llingr/llingr-demux)](go.mod)
 
 Efficient message consumer engine for brokers with ordered partition/offset semantics.
@@ -12,8 +11,8 @@ Efficient message consumer engine for brokers with ordered partition/offset sema
 Scale consumers vertically to improve compute utilization, keep costly broker/infrastructure
 spend low and minimize operational complexity while significantly improving throughput and latency.
 
-Reliable and observable: per-key ordering, clean rebalances, at-least-once processing, per-message
-telemetry, per-consumer bandwidth.
+Reliable and observable: per-key ordering, clean rebalances, bounded at-least-once processing,
+per-message telemetry, per-consumer bandwidth.
 
 Built using standard Go with **no third-party dependencies**.
 
@@ -119,7 +118,7 @@ to self.
 
 ---
 
-## How It Works
+## Fan-Out, Fan-In
 
 For overview see: [llingr.io/correctness](https://llingr.io/correctness)
 
@@ -147,10 +146,17 @@ For overview see: [llingr.io/docs](https://llingr.io/docs#config-concurrency)
 
 ## Processing Guarantees
 
-**At-least-once** - messages are only considered ready to commit after they have
-been processed by the host application. All commit logic is encapsulated in
-the `offset.Committer`, which tracks contiguous offsets and only commits safe
-ranges.
+**Bounded at-least-once** - messages are only considered ready to commit after
+they have been processed by the host application. All commit logic is
+encapsulated in the `offset.Committer`, which tracks contiguous offsets and
+only commits safe ranges. The bound has two regimes. During planned lifecycle
+events (deploys, scaling, rebalances) the drain coordinator completes in-flight
+work and commits before partitions are released, so normal operations produce
+zero duplicates and rolling updates cause no delivery spikes. After a
+catastrophic crash (e.g. due to hardware failure), redelivery is strictly
+bounded by the commit interval; only messages processed between commits are
+potential duplicates. The default commit interval is 5s, configurable between
+250ms and 15s.
 
 **Circuit breakers** - the engine treats a failed ProcessMessage call followed
 by a WriteDeadLetter error as a significant (likely infrastructure) issue: in
@@ -217,12 +223,15 @@ Thresholds are workload-specific, so this would be an operational alert.
 
 ## License & Copyright
 
-**llingr-demux** is dual-licensed under the GNU Affero General Public License v3 ([LICENSE](LICENSE)) or a commercial license.
+**llingr-demux** is dual-licensed: `AGPL-3.0-only OR LicenseRef-Llingr-Commercial`
+(every source file carries this SPDX expression; the package-level declaration is
+[license.spdx](license.spdx)).
 
 Patent pending.
 
 For closed-source or proprietary use, contact [license@llingr.io](mailto:license@llingr.io)
 for commercial licensing.
 
-- [LICENSE](LICENSE) - AGPL-3.0 (commercial licensing available)
+- [LICENSE](LICENSE) - AGPL-3.0-only (commercial licensing available)
+- [LICENSES/LicenseRef-Llingr-Commercial.txt](LICENSES/LicenseRef-Llingr-Commercial.txt) - the commercial license reference
 - [COPYRIGHT](COPYRIGHT) - Copyright

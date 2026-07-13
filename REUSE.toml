@@ -1,0 +1,31 @@
+version = 1
+
+# Bulk annotation for files that cannot or should not carry in-file SPDX
+# headers (generated files, structured configs, prose, attribution files).
+# precedence = "closest" keeps any in-file header authoritative.
+[[annotations]]
+path = [
+    ".fossa.yml",
+    ".gitattributes",
+    ".github/**",
+    ".gitignore",
+    ".markdownlint.json",
+    ".nilaway-exclude",
+    "AUTHORS",
+    "CODE_OF_CONDUCT.md",
+    "CONTRIBUTING.md",
+    "COPYRIGHT",
+    "Makefile",
+    "README.md",
+    "SECURITY.md",
+    "go.mod",
+    "go.sum",
+    "benchmarks/**/*.md",
+    "benchmarks/**/*.csv",
+    "benchmarks/**/*.html",
+    "benchmarks/**/*.json",
+    "demux/**/*.md",
+]
+precedence = "closest"
+SPDX-FileCopyrightText = "Copyright (c) 2026 The llingr-demux Authors"
+SPDX-License-Identifier = "AGPL-3.0-only OR LicenseRef-Llingr-Commercial"

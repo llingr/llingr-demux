@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 The llingr-demux Authors
-// SPDX-License-Identifier: AGPL-3.0
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Llingr-Commercial
 
 // Benchmark runner for llingr-demux performance testing.
 // Runs the e2e pipeline with configurable parameters and appends results to a CSV file.

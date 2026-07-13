@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 The llingr-demux Authors
-// SPDX-License-Identifier: AGPL-3.0
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Llingr-Commercial
 
 package scenario
 
@@ -53,9 +53,9 @@ func (m *TestMessage) String() string {
 
 	// identity line
 	if m.Tag != "" {
-		sb.WriteString(fmt.Sprintf("%q [p:%d o:%d key:%q]", m.Tag, m.Partition, m.Offset, m.Key))
+		fmt.Fprintf(&sb, "%q [p:%d o:%d key:%q]", m.Tag, m.Partition, m.Offset, m.Key)
 	} else {
-		sb.WriteString(fmt.Sprintf("[p:%d o:%d key:%q]", m.Partition, m.Offset, m.Key))
+		fmt.Fprintf(&sb, "[p:%d o:%d key:%q]", m.Partition, m.Offset, m.Key)
 	}
 
 	// behaviours (only show non-defaults)

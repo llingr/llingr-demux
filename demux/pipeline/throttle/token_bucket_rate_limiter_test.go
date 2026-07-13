@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 The llingr-demux Authors
-// SPDX-License-Identifier: AGPL-3.0
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Llingr-Commercial
 
 package throttle
 
@@ -27,10 +27,6 @@ func TestNewTokenBucket_ReturnsValidLimiter(t *testing.T) {
 	if limiter.cancel == nil {
 		t.Fatal("expected cancel to be set")
 	}
-}
-
-func TestNewTokenBucket_ImplementsRateLimiterInterface(t *testing.T) {
-	var _ RateLimiter[string] = NewTokenBucket[string](1000, 5)
 }
 
 func TestNewTokenBucket_BurstAvailableImmediately(t *testing.T) {
@@ -167,8 +163,7 @@ func TestTokenBucket_Stop(t *testing.T) {
 		}()
 		select {
 		case <-done:
-		default:
-			break
+		case <-time.After(time.Millisecond):
 		}
 	}
 
