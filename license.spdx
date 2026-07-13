@@ -1,0 +1,21 @@
+SPDXVersion: SPDX-2.2
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: llingr-demux-licensing
+DocumentNamespace: https://llingr.io/spdx/llingr-demux-licensing
+Creator: Organization: Llingr Software Ltd
+Created: 2026-07-12T00:00:00Z
+
+PackageName: llingr-demux
+SPDXID: SPDXRef-Package-llingr-demux
+PackageDownloadLocation: https://github.com/llingr/llingr-demux
+FilesAnalyzed: false
+PackageLicenseConcluded: AGPL-3.0-only OR LicenseRef-Llingr-Commercial
+PackageLicenseDeclared: AGPL-3.0-only OR LicenseRef-Llingr-Commercial
+PackageCopyrightText: Copyright (c) 2026 The llingr-demux Authors
+
+LicenseID: LicenseRef-Llingr-Commercial
+LicenseName: Llingr Commercial License
+LicenseCrossReference: https://llingr.io
+LicenseComment: <text>Commercial licenses are granted by Llingr Software Ltd. Copyright is held by Ordologica Ltd (see AUTHORS).</text>
+ExtractedText: <text>Commercial use of this software is governed solely by a commercial licence agreement executed between the licensee organisation and Llingr Software Ltd. Agreements are executed individually; the terms are provided on request. For proprietary or closed-source applications, for SaaS/cloud service providers, and for evaluation licences, contact license@llingr.io.</text>

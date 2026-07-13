@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 The llingr-demux Authors
-// SPDX-License-Identifier: AGPL-3.0
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Llingr-Commercial
 
 // Package bandwidth provides a side-channel aggregator for bandwidth telemetry
 // from broker adapters. This operates independently of the core message processing

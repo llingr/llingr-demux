@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 The llingr-demux Authors
-// SPDX-License-Identifier: AGPL-3.0
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Llingr-Commercial
 
 // Package broker provides in-memory mock brokers for end-to-end testing without real
 // infrastructure. [MockBroker] simulates subscribe, poll, commit, and rebalance operations.

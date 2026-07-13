@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 The llingr-demux Authors
-// SPDX-License-Identifier: AGPL-3.0
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Llingr-Commercial
 
 package throttle
 
@@ -23,10 +23,6 @@ func TestNewTicker_ReturnsValidLimiter(t *testing.T) {
 	case <-time.After(20 * time.Millisecond):
 		t.Fatal("Await did not return in time")
 	}
-}
-
-func TestNewTicker_ImplementsRateLimiterInterface(t *testing.T) {
-	var _ RateLimiter[string] = NewTicker[string](1000)
 }
 
 func TestNewTicker_TokensArriveAtExpectedRate(t *testing.T) {

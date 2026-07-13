@@ -1,0 +1,76 @@
+name: Release build
+
+# Trusted builder: builds the release assets and signs the attestations.
+# Runs only via workflow_call from release.yml. Holds signing permissions
+# but NO contents:write; the caller's publish job is the inverse.
+# Verify with:
+#   gh attestation verify <asset> --repo llingr/llingr-demux \
+#     --signer-workflow llingr/llingr-demux/.github/workflows/release-build.yml
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build & attest
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v6
+        with:
+          # cyclonedx-gomod v1.10+ requires Go >= 1.25
+          go-version: '1.26'
+          cache: false
+
+      - name: Source archive
+        run: >
+          git archive --format=tar.gz
+          --prefix="llingr-demux-${GITHUB_REF_NAME}/"
+          -o "llingr-demux_${GITHUB_REF_NAME}.tar.gz"
+          "${GITHUB_REF_NAME}"
+
+      - name: Generate CycloneDX SBOM (cyclonedx-gomod)
+        run: >
+          go run github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@latest
+          mod -licenses -type library -json
+          -output "llingr-demux_${GITHUB_REF_NAME}.cdx.json"
+
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@v0
+
+      - name: Generate SPDX SBOM (syft)
+        run: >
+          syft dir:.
+          --exclude './.github/**'
+          --exclude './benchmarks/**'
+          --source-name llingr-demux
+          --source-version "${GITHUB_REF_NAME}"
+          --source-supplier "Llingr Software Ltd"
+          -o "spdx-json=llingr-demux_${GITHUB_REF_NAME}.spdx.json"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: llingr-demux_${{ github.ref_name }}.tar.gz
+
+      - name: Attest SBOM
+        uses: actions/attest-sbom@v4
+        with:
+          subject-path: llingr-demux_${{ github.ref_name }}.tar.gz
+          sbom-path: llingr-demux_${{ github.ref_name }}.cdx.json
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-assets
+          path: llingr-demux_${{ github.ref_name }}.*
+          if-no-files-found: error
+          retention-days: 1

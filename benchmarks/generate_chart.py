@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2026 The llingr-demux Authors
-# SPDX-License-Identifier: AGPL-3.0
+# SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Llingr-Commercial
 
 """
 Generates a single self-contained HTML benchmark visualization from CSV data.

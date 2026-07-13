@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 The llingr-demux Authors
-// SPDX-License-Identifier: AGPL-3.0
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Llingr-Commercial
 
 // Package alloc provides object pooling for WorkItems to reduce GC pressure at high throughput.
 //
