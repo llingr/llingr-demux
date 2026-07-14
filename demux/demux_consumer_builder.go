@@ -253,12 +253,18 @@ func (b *ConsumerBuilder[T]) Build(brokerPort nexus.BrokerPort[T]) nexus.Adapted
 		topicName:           b.topicName,
 		logger:              b.logger,
 		stopRateLimit:       b.rateLimiter.Stop,
+		notify:              make(chan struct{}, 1),
+		gracefulDone:        make(chan struct{}, 1),
 	}
 
 	// set shutdown callback if provided
 	if b.shutdownCallback != nil {
 		consumer.shutdownCallback.Store(&b.shutdownCallback)
 	}
+
+	// emergency-exit observer: parked from Build (not Subscribe) so a trip in
+	// any lifecycle window reaches the registered shutdown callback
+	go consumer.watchEmergency()
 
 	message, level, err := licenseStatus(time.Now(), b.licenseKeyFn)
 	if err != nil {

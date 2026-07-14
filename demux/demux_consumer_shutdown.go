@@ -50,6 +50,7 @@ func (dxc *Consumer[T]) Shutdown() error {
 	callback := dxc.shutdownCallback.Load()
 	if callback == nil {
 		dxc.logger.Warn(dxc.ctx, "never subscribed to topic, shutdown complete!")
+		dxc.signalGracefulDone()
 		return nil
 	}
 
@@ -69,8 +70,15 @@ func (dxc *Consumer[T]) Shutdown() error {
 	// deliver last buffered work items
 	dxc.metricsCollector.Stop()
 
-	dxc.logger.Info(dxc.ctx, fmt.Sprintf("invoking shutdownCallback for topicName: %s", dxc.topicName))
-	(*callback)(dxc.ctx, nil) // nil reason = graceful
+	// the callback fires exactly once across graceful and emergency exits:
+	// skip it here if an emergency delivery already claimed the notify slot.
+	// A trip recorded without a listener (no callback registered when it
+	// landed) is reported here instead of a graceful nil.
+	if dxc.claimNotify() {
+		dxc.logger.Info(dxc.ctx, fmt.Sprintf("invoking shutdownCallback for topicName: %s", dxc.topicName))
+		(*callback)(dxc.ctx, dxc.trippedReason()) // nil reason = graceful
+	}
+	dxc.signalGracefulDone()
 	return nil
 }
 

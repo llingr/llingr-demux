@@ -65,12 +65,24 @@ type Consumer[T any] struct {
 	topicName           string                                 // for logging
 	logger              nexus.Logger                           // operational logging, exposed to adapters via Logger()
 	stopRateLimit       func()                                 // stops rate limiter on shutdown (no-op if unconfigured)
+	// notify elects the single deliverer of the shutdown callback across the
+	// graceful and emergency exits, so the host hears about the consumer's end
+	// exactly once (see claimNotify). gracefulDone releases the emergency
+	// observer once a graceful shutdown has completed without a trip (a cap-1
+	// token, not a close, so a repeated Shutdown cannot double-close). Both
+	// are wired by the builder; watchEmergency documents the observer.
+	notify       chan struct{}
+	gracefulDone chan struct{}
+	// emergencyReason records a delivered trip so a Shutdown that wins the
+	// notify election after one still reports the emergency (trippedReason)
+	emergencyReason atomic.Pointer[error]
 }
 
 const (
 	failedToSubscribe         = "failed to subscribe to topic: %s - %w"
 	startingPollingLoop       = "starting %T poll loop for topic: %s"
 	startedConsuming          = "started %T for topic: %s"
+	subscribeAfterEmergency   = "emergency shutdown for topicName: %s - %w"
 	awaitAssignmentTimeout    = "timeout after %s waiting for partition assignments, unsubscribing"
 	unsubscribeDrainTimeout   = "timeout: %s exceeded draining prior to unsubscribe, triggering circuit breaker"
 	defaultCallbackRegistered = "registering defaultShutdownCallback (os.Interrupt after %s) for topicName: %s - " +
@@ -81,6 +93,15 @@ const (
 // Topic name is provided at construction time via the adapter.
 func (dxc *Consumer[T]) Subscribe() error {
 	topicName := dxc.topicName
+
+	// an emergency shutdown that already tripped disarms subscription: fail
+	// before joining the broker rather than starting a consumer that is
+	// already stopping (the observer delivers the shutdown callback).
+	select {
+	case <-dxc.circuitBreaker.Tripped():
+		return fmt.Errorf(subscribeAfterEmergency, topicName, dxc.circuitBreaker.Reason())
+	default:
+	}
 
 	// register default shutdown callback if none provided
 	defaultCallback := nexus.ShutdownCallback(dxc.defaultShutdownCallback)
@@ -106,15 +127,23 @@ func (dxc *Consumer[T]) Subscribe() error {
 
 	select {
 	case <-dxc.subscription.AwaitAssigned():
+		// a trip that raced the assignment wins: the engine is already
+		// stopping, so report the emergency rather than a healthy start (the
+		// observer delivers the shutdown callback).
+		select {
+		case <-dxc.circuitBreaker.Tripped():
+			return fmt.Errorf(subscribeAfterEmergency, topicName, dxc.circuitBreaker.Reason())
+		default:
+		}
 		dxc.logger.Info(dxc.ctx, fmt.Sprintf(startedConsuming, dxc, topicName))
+		// shutdown callback delivery on emergency exits is handled by the
+		// watchEmergency observer, parked since Build
 
-		// listen for circuit breaker and invoke shutdown callback
-		go func() {
-			if reason := <-dxc.circuitBreaker.Triggered(); reason != "" {
-				shutdownCallback := *dxc.shutdownCallback.Load()
-				shutdownCallback(dxc.ctx, errors.New(reason))
-			}
-		}()
+	case <-dxc.circuitBreaker.Tripped():
+		// emergency shutdown while awaiting assignment: the in-flight
+		// subscription fails cleanly instead of the trip waiting on an
+		// assignment that may never complete
+		return fmt.Errorf(subscribeAfterEmergency, topicName, dxc.circuitBreaker.Reason())
 
 	case <-time.After(dxc.demuxConfig.AwaitAssignmentsTimeout):
 		timeoutDuration := dxc.demuxConfig.AwaitAssignmentsTimeout

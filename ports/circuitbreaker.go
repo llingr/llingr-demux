@@ -18,7 +18,8 @@ type CircuitBreakerPort interface {
 	// TriggerEmergencyShutdown initiates protective shutdown.
 	// Cancels all in-flight ProcessMessage calls via context cancellation
 	// and signals the host application via the Triggered channel.
-	// Safe to call multiple times; only the first call has effect (sync.Once).
+	// Safe to call multiple times, concurrently and re-entrantly; only the
+	// first call has effect and no call ever blocks on another.
 	TriggerEmergencyShutdown(reason error)
 
 	// Triggered returns a channel that receives the shutdown reason string.

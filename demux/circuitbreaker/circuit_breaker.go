@@ -17,8 +17,8 @@ package circuitbreaker
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"sync"
 
 	"github.com/llingr/llingr-nexus/nexus"
 )
@@ -33,7 +33,19 @@ type CircuitBreaker struct {
 	logger            nexus.Logger
 	ctx               context.Context // for logging (won't be cancelled)
 	emergencyShutdown chan string     // advise host app
-	once              sync.Once
+	// trip elects the single caller that drives the shutdown: the first send
+	// fills the buffer and every later call (concurrent OR re-entrant on the
+	// same goroutine) takes the select default and returns immediately. A
+	// sync.Once cannot provide this: Do holds a mutex across f, so a trigger
+	// re-entering from inside the winner's own logging (a host log handler
+	// calling back into the engine) would self-deadlock.
+	trip chan error
+	// tripped is a latch, closed exactly once by the winner AFTER reason is
+	// set and processing is cancelled. Unlike the single-consume
+	// emergencyShutdown payload channel, a closed latch is observable by any
+	// number of readers at any later time.
+	tripped chan struct{}
+	reason  error // written by the winner before close(tripped)
 }
 
 // New circuit breaker that coordinates emergency
@@ -47,10 +59,11 @@ func New(globalCtx context.Context, logger nexus.Logger) *CircuitBreaker {
 		mainCtx:           mainCtx, // for circuit-breaker
 		mainCtxDone:       mainCtx.Done,
 		mainCancelFunc:    mainCancelFunc, // attached to mainCtx
-		once:              sync.Once{},
-		ctx:               globalCtx, // must not be cancelled
+		ctx:               globalCtx,      // must not be cancelled
 		logger:            logger,
 		emergencyShutdown: make(chan string, 1),
+		trip:              make(chan error, 1),
+		tripped:           make(chan struct{}),
 	}
 }
 
@@ -68,25 +81,62 @@ const (
 )
 
 // TriggerEmergencyShutdown initiates protective shutdown to arrest cascading
-// failures, mitigate resource exhaustion and protect overall system stability
+// failures, mitigate resource exhaustion and protect overall system stability.
+//
+// Safe to call from any goroutine, in any lifecycle state, repeatedly and
+// re-entrantly (including from inside a log handler the winner's own logging
+// reaches); only the first call has effect, and no call ever blocks beyond
+// the winner's synchronous logging. Processing is cancelled before anything
+// can observe the trip, so the trip is in effect when the winning call
+// returns even if a log handler stalls.
 func (cb *CircuitBreaker) TriggerEmergencyShutdown(reason error) {
-	cb.once.Do(func() {
-		cb.logger.Error(cb.ctx, fmt.Sprintf(shutdownInitiated, reason))
+	if reason == nil {
+		reason = errors.New("unspecified emergency shutdown")
+	}
 
-		// stop polling loop and prevent new messages from being processed
-		cb.mainCancelFunc()
-		cb.logger.Warn(cb.ctx, contextsCancelled)
+	select {
+	case cb.trip <- reason:
+		// won the election: the only caller that runs the body below
+	default:
+		return
+	}
 
-		// application must register callback,
-		// simpler implementations might use os.Exit(1)
-		cb.emergencyShutdown <- fmt.Sprintf(signalMessage, reason)
-		close(cb.emergencyShutdown)
-		cb.logger.Info(cb.ctx, shutdownComplete)
-	})
+	cb.reason = reason
+
+	// stop polling loop and prevent new messages from being processed
+	cb.mainCancelFunc()
+	close(cb.tripped)
+
+	cb.logger.Error(cb.ctx, fmt.Sprintf(shutdownInitiated, reason))
+	cb.logger.Warn(cb.ctx, contextsCancelled)
+
+	// application must register callback,
+	// simpler implementations might use os.Exit(1)
+	cb.emergencyShutdown <- fmt.Sprintf(signalMessage, reason)
+	close(cb.emergencyShutdown)
+	cb.logger.Info(cb.ctx, shutdownComplete)
 }
 
 // Triggered callback channel advises if
 // and why the circuit-breaker was closed
 func (cb *CircuitBreaker) Triggered() <-chan string {
 	return cb.emergencyShutdown
+}
+
+// Tripped returns a latch that is closed once the circuit breaker has
+// triggered. Unlike Triggered, reading it consumes nothing, so any number
+// of observers may select on it, before or after the trip.
+func (cb *CircuitBreaker) Tripped() <-chan struct{} {
+	return cb.tripped
+}
+
+// Reason returns the error that tripped the circuit breaker, or nil while
+// it has not tripped. The value is stable once Tripped is closed.
+func (cb *CircuitBreaker) Reason() error {
+	select {
+	case <-cb.tripped:
+		return cb.reason
+	default:
+		return nil
+	}
 }
