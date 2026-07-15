@@ -16,13 +16,11 @@ import (
 	"github.com/llingr/llingr-nexus/nexus"
 )
 
-// The consumer satisfies the nexus EmergencyShutdowner assertion interface
-// (asserted structurally here: this module builds against the published nexus,
-// which gains the named interface in its next release), so adapters and
+// The consumer satisfies nexus.EmergencyShutdowner, so adapters and
 // applications can reach the emergency stop through the handles they already
 // hold. The distinct method name is the version gate: only engines with the
 // exactly-once delivery semantics satisfy it.
-var _ interface{ EmergencyShutdown(reason error) } = (*Consumer[any])(nil)
+var _ nexus.EmergencyShutdowner = (*Consumer[any])(nil)
 
 // emergencyHarness builds a consumer with a counting shutdown callback.
 func emergencyHarness(t *testing.T, cfg config.DemuxConfig) (*Consumer[any], *controllableBrokerPort, *atomicCallbackRecorder) {
