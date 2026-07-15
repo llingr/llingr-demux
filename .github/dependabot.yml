@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # Keep the SHA-pinned actions current: Dependabot bumps each pin to the new
+  # commit SHA and rewrites its version comment. Grouped into one weekly PR so
+  # updates don't fan out into per-action churn.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - "*"

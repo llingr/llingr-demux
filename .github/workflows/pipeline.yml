@@ -1,0 +1,55 @@
+name: Pipeline
+# Distinguish push vs PR runs at a glance in the Actions list.
+run-name: "Pipeline (${{ github.event_name == 'pull_request' && format('PR #{0}', github.event.pull_request.number) || format('push {0}', github.ref_name) }})"
+
+# Single entry point for CI. Each check still lives in its own reusable
+# workflow file (lint.yml, ci.yml, ...); calling them from here collapses the
+# many-rows-per-commit into one. Cheap checks run on every branch push for
+# fast inner-loop feedback; the expensive suite (tests, CodeQL) runs only on a
+# PR, held behind those cheap checks so a cheap failure skips the heavy work.
+
+on:
+  # Every branch push (not tags: those fall through to release.yml).
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Fast checks: run on every push, and again on a PR where they gate the
+  # heavy suite. Quick signal without paying for tests/CodeQL.
+  lint:
+    name: Lint
+    uses: ./.github/workflows/lint.yml
+
+  reuse:
+    name: REUSE
+    uses: ./.github/workflows/reuse.yml
+
+  vulncheck:
+    name: Vulncheck
+    uses: ./.github/workflows/vulncheck.yml
+
+  # Expensive checks: PR only, and held behind the fast checks so a lint,
+  # licensing, or vuln failure short-circuits before tests or CodeQL spin up.
+  ci:
+    name: CI
+    if: github.event_name == 'pull_request'
+    needs: [lint, reuse, vulncheck]
+    uses: ./.github/workflows/ci.yml
+
+  codeql:
+    name: CodeQL
+    if: github.event_name == 'pull_request'
+    needs: [lint, reuse, vulncheck]
+    uses: ./.github/workflows/codeql.yml
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
