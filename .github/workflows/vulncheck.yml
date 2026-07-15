@@ -1,29 +1,31 @@
 name: Vulncheck
 
 on:
-  push:
-  pull_request:
+  # Called by the Pipeline orchestrator on push/PR; runs standalone on the
+  # weekly cron so scans keep landing between commits.
+  workflow_call:
   schedule:
     - cron: '45 5 * * 2'
 
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   govulncheck:
     name: govulncheck
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           # newest toolchain so the scan sees current stdlib security patches
           go-version: 'stable'
           check-latest: true
           cache: true
-      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      # Pinned tool version; the vulnerability database is still fetched fresh
+      # at scan time, so detection stays current.
+      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
       - run: govulncheck ./...

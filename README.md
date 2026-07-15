@@ -1,6 +1,6 @@
 # llingr-demux
 
-[![CI](https://github.com/llingr/llingr-demux/actions/workflows/ci.yml/badge.svg)](https://github.com/llingr/llingr-demux/actions/workflows/ci.yml)
+[![Pipeline](https://github.com/llingr/llingr-demux/actions/workflows/pipeline.yml/badge.svg)](https://github.com/llingr/llingr-demux/actions/workflows/pipeline.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/llingr/llingr-demux.svg)](https://pkg.go.dev/github.com/llingr/llingr-demux)
 [![Tag](https://img.shields.io/github/v/tag/llingr/llingr-demux)](https://github.com/llingr/llingr-demux/tags)
 [![License](https://img.shields.io/badge/License-Dual_Commercial%2FAGPL--3.0-blue.svg)](LICENSE)
