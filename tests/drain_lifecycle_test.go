@@ -122,6 +122,7 @@ func TestDrainLifecycle(t *testing.T) {
 		WithLogger(logger)
 
 	consumer := builder.Build(broker)
+	failOnEmergency(t, consumer)
 
 	// Assign all partitions
 	rebalanceDone := make(chan struct{})

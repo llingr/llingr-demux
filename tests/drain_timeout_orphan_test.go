@@ -74,7 +74,7 @@ func TestDrainTimeoutOrphan(t *testing.T) {
 
 	initialAssignDone := make(chan struct{})
 	broker.rebalanceFunc = func() {
-		committed := broker.resumeDelivery(0)
+		committed := broker.prepareRedelivery(0)
 		info := []nexus.RebalanceInfo{{
 			RebalanceType: nexus.Assign, TopicName: topicName,
 			Partition: 0, CommittedOffset: committed,
@@ -82,6 +82,7 @@ func TestDrainTimeoutOrphan(t *testing.T) {
 		if err := consumer.TriggerRebalance(nexus.Assign, info); err != nil {
 			t.Errorf("initial TriggerRebalance failed: %v", err)
 		}
+		broker.startDelivery(0)
 		close(initialAssignDone)
 	}
 

@@ -10,16 +10,14 @@ package ports
 // Coordinates emergency shutdown when infrastructure or application errors
 // threaten system reliability. All methods are cold path (error/shutdown only).
 type CircuitBreakerPort interface {
-	// MainCtxDone returns a channel that's closed when the circuit breaker trips.
-	// Used to cancel in-flight processing and stop the polling loop.
-	// Called once during construction; the returned channel is stored.
+	// MainCtxDone returns a channel that is closed when the circuit breaker
+	// trips. It is used to stop the polling loop and message dispatch prior
+	// to exit.
 	MainCtxDone() <-chan struct{}
 
-	// TriggerEmergencyShutdown initiates protective shutdown.
-	// Cancels all in-flight ProcessMessage calls via context cancellation
-	// and signals the host application via the Triggered channel.
-	// Safe to call multiple times, concurrently and re-entrantly; only the
-	// first call has effect and no call ever blocks on another.
+	// TriggerEmergencyShutdown cancels the main context, stops polling
+	// and dispatch, then signals Triggered. In-flight ProcessMessage calls
+	// may run to completion. Must be idempotent and re-entrant: never block.
 	TriggerEmergencyShutdown(reason error)
 
 	// Triggered returns a channel that receives the shutdown reason string.

@@ -267,6 +267,7 @@ func TestSlamWild(t *testing.T) {
 		WithLogger(logger)
 
 	consumer := builder.Build(broker)
+	failOnEmergency(t, consumer)
 
 	// Assign all 12 partitions
 	rebalanceDone := make(chan struct{})
@@ -406,6 +407,7 @@ func runSlamScenario(t *testing.T, numKeys, numMessages int) {
 		WithLogger(logger)
 
 	consumer := builder.Build(broker)
+	failOnEmergency(t, consumer)
 
 	// Configure rebalance: assign partition 0
 	rebalanceDone := make(chan struct{})

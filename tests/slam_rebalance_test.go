@@ -159,9 +159,13 @@ func (b *churnBroker) stopDelivery(p int32) {
 	b.mu.Unlock()
 }
 
-// resumeDelivery re-assigns a partition, resuming from its committed offset
-// like a real broker: the uncommitted tail is redelivered.
-func (b *churnBroker) resumeDelivery(p int32) (committedOffset int64) {
+// prepareRedelivery rewinds a partition to its committed offset like a real
+// broker: the uncommitted tail will be redelivered. Delivery stays stopped:
+// a real client's fetches cannot precede the assign callback completing, so
+// callers open the tap with startDelivery only after TriggerRebalance(Assign)
+// returns. Opening it earlier races the poll loop against the engine's
+// prev-offset reset and trips the offset-regression breaker.
+func (b *churnBroker) prepareRedelivery(p int32) (committedOffset int64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	committed, ok := b.committedNext[p]
@@ -174,8 +178,14 @@ func (b *churnBroker) resumeDelivery(p int32) (committedOffset int64) {
 		index++
 	}
 	b.nextIndex[p] = index
-	b.assigned[p] = true
 	return committed
+}
+
+// startDelivery opens delivery for a prepared partition.
+func (b *churnBroker) startDelivery(p int32) {
+	b.mu.Lock()
+	b.assigned[p] = true
+	b.mu.Unlock()
 }
 
 func (b *churnBroker) allComplete() bool {
@@ -235,6 +245,7 @@ func TestSlamRebalanceChurn(t *testing.T) {
 		WithOverflowGuard(make(chan struct{}, 2)).
 		WithLogger(mocklogger.NewRecordingLogger()).
 		Build(broker)
+	failOnEmergency(t, consumer)
 
 	// initial assignment of every partition, from the broker's callback
 	// goroutine, with real committed offsets (none yet: -1)
@@ -243,7 +254,7 @@ func TestSlamRebalanceChurn(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 		info := make([]nexus.RebalanceInfo, partitions)
 		for p := 0; p < partitions; p++ {
-			committed := broker.resumeDelivery(int32(p))
+			committed := broker.prepareRedelivery(int32(p))
 			info[p] = nexus.RebalanceInfo{
 				RebalanceType:   nexus.Assign,
 				TopicName:       topicName,
@@ -253,6 +264,9 @@ func TestSlamRebalanceChurn(t *testing.T) {
 		}
 		if err := consumer.TriggerRebalance(nexus.Assign, info); err != nil {
 			t.Errorf("initial TriggerRebalance failed: %v", err)
+		}
+		for p := 0; p < partitions; p++ {
+			broker.startDelivery(int32(p))
 		}
 		close(initialAssignDone)
 	}
@@ -289,7 +303,7 @@ func TestSlamRebalanceChurn(t *testing.T) {
 			}
 			time.Sleep(time.Duration(1+random.Intn(4)) * time.Millisecond)
 
-			committed := broker.resumeDelivery(p)
+			committed := broker.prepareRedelivery(p)
 			assign := []nexus.RebalanceInfo{{
 				RebalanceType: nexus.Assign, TopicName: topicName, Partition: p, CommittedOffset: committed,
 			}}
@@ -297,6 +311,7 @@ func TestSlamRebalanceChurn(t *testing.T) {
 				t.Errorf("TriggerRebalance(Assign, p%d) failed: %v", p, err)
 				return
 			}
+			broker.startDelivery(p)
 			churnCycles.Add(1)
 			time.Sleep(time.Duration(1+random.Intn(5)) * time.Millisecond)
 		}
