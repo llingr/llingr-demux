@@ -123,7 +123,7 @@ func BenchmarkPipeline_Throughput(b *testing.B) {
 		return nil
 	}
 
-	demux := NewDemux(cfg, processMessage, dl, committer, cb, guard, overflowGuard, logger, func(_ *nexus.Message[benchPayload]) {})
+	demux := NewDemux(ctx, cfg, processMessage, dl, committer, cb, guard, overflowGuard, logger, func(_ *nexus.Message[benchPayload]) {})
 
 	// ExtractEnvelope returns pre-computed key, partition and offset.
 	// Ctx not used in pipeline - ProcessMessage receives it but we no-op.
@@ -214,7 +214,7 @@ func BenchmarkWorkerShard_HotColdPaths(b *testing.B) {
 		return nil
 	}
 
-	demux := NewDemux(cfg, processMessage, dl, committer, cb, guard, overflowGuard, logger, func(_ *nexus.Message[benchPayload]) {})
+	demux := NewDemux(ctx, cfg, processMessage, dl, committer, cb, guard, overflowGuard, logger, func(_ *nexus.Message[benchPayload]) {})
 
 	extractEnvelope := func(p benchPayload) nexus.Envelope {
 		return nexus.Envelope{
@@ -294,7 +294,7 @@ func TestAllocs_Pipeline(t *testing.T) {
 		return nil
 	}
 
-	demux := NewDemux(cfg, processMessage, dl, committer, cb, guard, overflowGuard, logger, func(_ *nexus.Message[benchPayload]) {})
+	demux := NewDemux(ctx, cfg, processMessage, dl, committer, cb, guard, overflowGuard, logger, func(_ *nexus.Message[benchPayload]) {})
 	defer demux.DrainWorkers()
 
 	extractEnvelope := func(p benchPayload) nexus.Envelope {
@@ -308,7 +308,7 @@ func TestAllocs_Pipeline(t *testing.T) {
 	processor := NewProcessor(ctx, guard, overflowGuard, demux, cfg, extractEnvelope, pool, logger)
 
 	payloadCount := len(benchPayloads)
-	var zeroTime time.Time
+	readTime := time.Now()
 
 	const partitionCount = 24
 	partitionOffsets := make([]int64, partitionCount)
@@ -317,7 +317,7 @@ func TestAllocs_Pipeline(t *testing.T) {
 		payload := benchPayloads[partitionOffsets[0]%int64(payloadCount)]
 		payload.offset = partitionOffsets[payload.partition]
 		partitionOffsets[payload.partition]++
-		_ = processor.Process(payload, zeroTime)
+		_ = processor.Process(payload, readTime)
 	})
 
 	if allocs > 1 {
@@ -353,7 +353,7 @@ func TestAllocs_WorkerShard(t *testing.T) {
 		return nil
 	}
 
-	demux := NewDemux(cfg, processMessage, dl, committer, cb, guard, overflowGuard, logger, func(_ *nexus.Message[benchPayload]) {})
+	demux := NewDemux(ctx, cfg, processMessage, dl, committer, cb, guard, overflowGuard, logger, func(_ *nexus.Message[benchPayload]) {})
 	defer demux.DrainWorkers()
 
 	extractEnvelope := func(p benchPayload) nexus.Envelope {
@@ -367,7 +367,7 @@ func TestAllocs_WorkerShard(t *testing.T) {
 	processor := NewProcessor(ctx, guard, overflowGuard, demux, cfg, extractEnvelope, pool, logger)
 
 	payloadCount := len(benchPayloadsHotCold)
-	var zeroTime time.Time
+	readTime := time.Now()
 
 	const partitionCount = 24
 	partitionOffsets := make([]int64, partitionCount)
@@ -376,7 +376,7 @@ func TestAllocs_WorkerShard(t *testing.T) {
 		payload := benchPayloadsHotCold[partitionOffsets[0]%int64(payloadCount)]
 		payload.offset = partitionOffsets[payload.partition]
 		partitionOffsets[payload.partition]++
-		_ = processor.Process(payload, zeroTime)
+		_ = processor.Process(payload, readTime)
 	})
 
 	if allocs > 1 {
