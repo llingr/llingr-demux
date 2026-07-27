@@ -70,7 +70,7 @@ func TestShutdownOverlappingRevokeDrain(t *testing.T) {
 		broker.rebalanceFunc = func() {
 			info := make([]nexus.RebalanceInfo, 2)
 			for p := int32(0); p < 2; p++ {
-				committed := broker.resumeDelivery(p)
+				committed := broker.prepareRedelivery(p)
 				info[p] = nexus.RebalanceInfo{
 					RebalanceType: nexus.Assign, TopicName: topicName,
 					Partition: p, CommittedOffset: committed,
@@ -78,6 +78,9 @@ func TestShutdownOverlappingRevokeDrain(t *testing.T) {
 			}
 			if err := consumer.TriggerRebalance(nexus.Assign, info); err != nil {
 				t.Errorf("iteration %d: initial TriggerRebalance failed: %v", iteration, err)
+			}
+			for p := int32(0); p < 2; p++ {
+				broker.startDelivery(p)
 			}
 			close(initialAssignDone)
 		}

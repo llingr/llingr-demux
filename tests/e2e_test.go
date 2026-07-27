@@ -81,6 +81,7 @@ func Test_EndToEnd_Messages_InOrder(t *testing.T) {
 		WithLogger(logger)
 
 	consumer := builder.Build(mockBroker)
+	failOnEmergency(t, consumer)
 
 	// configure broker to trigger rebalance when Subscribe is called
 	// (simulates broker clients that automatically assign partitions)
@@ -221,6 +222,7 @@ func Test_EndToEnd_WithProcessErrors(t *testing.T) {
 		WithLogger(logger)
 
 	consumer := builder.Build(mockBroker)
+	failOnEmergency(t, consumer)
 
 	// configure broker to trigger rebalance when Subscribe is called
 	mockBroker.SetRebalanceCallback(broker.MakeAssignAllPartitionsCallback(t, consumer, numPartitions))
@@ -302,6 +304,7 @@ func Test_EndToEnd_CommitErrors(t *testing.T) {
 		WithLogger(logger)
 
 	consumer := builder.Build(mockBroker)
+	failOnEmergency(t, consumer)
 
 	// configure broker to trigger rebalance when Subscribe is called
 	mockBroker.SetRebalanceCallback(broker.MakeAssignAllPartitionsCallback(t, consumer, numPartitions))
@@ -394,6 +397,7 @@ func Test_EndToEnd_StressTest_SaturateWorkers(t *testing.T) {
 		WithLogger(logger)
 
 	consumer := builder.Build(streamingBroker)
+	failOnEmergency(t, consumer)
 
 	// Configure rebalance callback
 	rebalanceDone := make(chan struct{})

@@ -137,6 +137,7 @@ func TestStutter(t *testing.T) {
 		WithOverflowGuard(make(chan struct{}, 2)).
 		WithLogger(logger).
 		Build(broker)
+	failOnEmergency(t, consumer)
 
 	rebalanceDone := make(chan struct{})
 	broker.rebalanceFunc = func() {

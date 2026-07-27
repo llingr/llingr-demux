@@ -45,6 +45,7 @@ func TestE2E_WithService_PropagatesToMetricsSink(t *testing.T) {
 		}).
 		WithLogger(mocklogger.NewNoOpLogger()).
 		Build(mockBroker)
+	failOnEmergency(t, consumer)
 
 	mockBroker.SetRebalanceCallback(broker.MakeAssignAllPartitionsCallback(t, consumer, 1))
 
@@ -96,6 +97,7 @@ func TestE2E_WithService_PropagatesToBandwidthSink(t *testing.T) {
 		WithBandwidthFlushInterval(time.Hour). // disable timed flush; Shutdown forces final flush
 		WithLogger(mocklogger.NewNoOpLogger()).
 		Build(bb)
+	failOnEmergency(t, consumer)
 
 	bb.SetRebalanceCallback(broker.MakeAssignAllPartitionsCallback(t, consumer, 1))
 

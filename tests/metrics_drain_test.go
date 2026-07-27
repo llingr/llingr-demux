@@ -86,6 +86,7 @@ func TestShutdown_DrainsMetricsCollector(t *testing.T) {
 		WithLogger(logger)
 
 	consumer := builder.Build(broker)
+	failOnEmergency(t, consumer)
 
 	// assign partition 0
 	rebalanceDone := make(chan struct{})
