@@ -112,6 +112,10 @@ func newDemuxTestHarness() *demuxTestHarness {
 		CommitIngestChannelLen:    100,
 		CommitPartitionSliceLen:   50,
 		AcquireCommitGuardTimeout: time.Second,
+
+		// production config validation enforces a non-zero acquire timeout;
+		// the retrySend stall valve relies on it
+		AcquireWorkerTimeoutCircuitBreaker: time.Minute,
 	}
 
 	guard := make(chan struct{}, cfg.ConcurrentKeys)
@@ -184,7 +188,7 @@ func (h *demuxTestHarness) createDemux() *Demux[string] {
 	committer := &mockCommitter[string]{
 		collectAndCommit: h.collectAndCommit,
 	}
-	return NewDemux(h.cfg, h.processMessage, h.deadLetter, committer,
+	return NewDemux(h.ctx, h.cfg, h.processMessage, h.deadLetter, committer,
 		h.circuitBreaker, h.guard, h.overflowGuard, h.logger, func(_ *nexus.Message[string]) {})
 }
 
@@ -197,6 +201,7 @@ func (h *demuxTestHarness) createWorkItem(key string, partition int32, off int64
 	workItem.Message.Payload = &payload
 	workItem.Metrics.Partition = partition
 	workItem.Metrics.Offset = off
+	workItem.Metrics.ReadTime = time.Now()
 	workItem.Ctx = context.Background()
 	return workItem
 }
@@ -2480,7 +2485,7 @@ func TestNewDemux_CreatesCorrectNumberOfShards(t *testing.T) {
 				return nil
 			}
 
-			dmx := NewDemux[string](cfg, processMessage, dl, committer, cb, guard, overflowGuard, logger, func(_ *nexus.Message[string]) {})
+			dmx := NewDemux[string](ctx, cfg, processMessage, dl, committer, cb, guard, overflowGuard, logger, func(_ *nexus.Message[string]) {})
 
 			if dmx == nil {
 				t.Fatal("NewDemux returned nil")
@@ -2519,7 +2524,7 @@ func TestNewDemux_SetsConcurrentKeysFromConfig(t *testing.T) {
 		return nil
 	}
 
-	dmx := NewDemux[string](cfg, processMessage, dl, committer, cb, guard, overflowGuard, logger, func(_ *nexus.Message[string]) {})
+	dmx := NewDemux[string](ctx, cfg, processMessage, dl, committer, cb, guard, overflowGuard, logger, func(_ *nexus.Message[string]) {})
 
 	if dmx.concurrentKeys != 999 {
 		t.Errorf("concurrentKeys = %d, want 999", dmx.concurrentKeys)
@@ -2553,7 +2558,7 @@ func TestNewDemux_AllShardsInitialized(t *testing.T) {
 		return nil
 	}
 
-	dmx := NewDemux[string](cfg, processMessage, dl, committer, cb, guard, overflowGuard, logger, func(_ *nexus.Message[string]) {})
+	dmx := NewDemux[string](ctx, cfg, processMessage, dl, committer, cb, guard, overflowGuard, logger, func(_ *nexus.Message[string]) {})
 
 	// verify each shard is non-nil and properly initialized
 	for i, shard := range dmx.workerShards {
@@ -2603,7 +2608,7 @@ func TestNewDemux_WorkersHaveAllDependenciesWired(t *testing.T) {
 		return nil
 	}
 
-	dmx := NewDemux[string](cfg, processMessage, dl, committer, cb, guard, overflowGuard, logger, func(_ *nexus.Message[string]) {})
+	dmx := NewDemux[string](ctx, cfg, processMessage, dl, committer, cb, guard, overflowGuard, logger, func(_ *nexus.Message[string]) {})
 
 	// borrow a worker from each shard and verify all dependencies are wired
 	for i, shard := range dmx.workerShards {
@@ -2703,7 +2708,7 @@ func TestNewDemux_EndToEndMessageFlow(t *testing.T) {
 	guard := make(chan struct{}, cfg.ConcurrentKeys)
 	overflowGuard := make(chan struct{}, 8)
 
-	dmx := NewDemux[string](cfg, processMessage, dl, committer, cb, guard, overflowGuard, logger, func(_ *nexus.Message[string]) {})
+	dmx := NewDemux[string](ctx, cfg, processMessage, dl, committer, cb, guard, overflowGuard, logger, func(_ *nexus.Message[string]) {})
 
 	pool := alloc.NewWorkItemsPool[string](cfg)
 
@@ -2827,7 +2832,7 @@ func TestNewDemux_ProcessMessageErrorTriggersDeadLetter(t *testing.T) {
 	guard := make(chan struct{}, cfg.ConcurrentKeys)
 	overflowGuard := make(chan struct{}, 4)
 
-	dmx := NewDemux[string](cfg, processMessage, dl, committer, cb, guard, overflowGuard, logger, func(_ *nexus.Message[string]) {})
+	dmx := NewDemux[string](ctx, cfg, processMessage, dl, committer, cb, guard, overflowGuard, logger, func(_ *nexus.Message[string]) {})
 
 	pool := alloc.NewWorkItemsPool[string](cfg)
 
@@ -2897,7 +2902,7 @@ func TestNewDemux_CircuitBreakerTriggeredOnDeadLetterFailure(t *testing.T) {
 	guard := make(chan struct{}, cfg.ConcurrentKeys)
 	overflowGuard := make(chan struct{}, 4)
 
-	dmx := NewDemux[string](cfg, processMessage, dl, committer, cb, guard, overflowGuard, logger, func(_ *nexus.Message[string]) {})
+	dmx := NewDemux[string](ctx, cfg, processMessage, dl, committer, cb, guard, overflowGuard, logger, func(_ *nexus.Message[string]) {})
 
 	pool := alloc.NewWorkItemsPool[string](cfg)
 

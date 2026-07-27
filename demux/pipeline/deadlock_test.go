@@ -61,7 +61,7 @@ func TestDeadlock_MutexHeldDuringBlockingChannelSend(t *testing.T) {
 		return nil
 	}, logger)
 
-	demux := NewDemux(cfg, processMessage, dl, committer, cb, guard, overflowGuard, logger, func(_ *nexus.Message[string]) {})
+	demux := NewDemux(ctx, cfg, processMessage, dl, committer, cb, guard, overflowGuard, logger, func(_ *nexus.Message[string]) {})
 
 	const (
 		numSenders   = 1
@@ -84,7 +84,7 @@ func TestDeadlock_MutexHeldDuringBlockingChannelSend(t *testing.T) {
 						Partition: 0,
 						Offset:    int64(id*opsPerSender + j),
 					},
-					Metrics: &nexus.Metrics{},
+					Metrics: &nexus.Metrics{ReadTime: time.Now()},
 				}
 				demux.SendToWorkerForProcessing(key, item)
 			}

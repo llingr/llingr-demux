@@ -4,6 +4,8 @@
 package pipeline
 
 import (
+	"context"
+	"fmt"
 	"sort"
 	"time"
 
@@ -37,13 +39,16 @@ import (
 //		→ Worker / channel
 //		→ nexus.ProcessMessage[T]
 type Demux[T any] struct {
-	workerShards   []*WorkerShard[T]
-	concurrentKeys int
-	awaitRateLimit func(*nexus.Message[T]) // always non-nil, default no-op
+	workerShards         []*WorkerShard[T]
+	concurrentKeys       int
+	awaitRateLimit       func(*nexus.Message[T]) // always non-nil, default no-op
+	acquireWorkerTimeout time.Duration
+	circuitBreaker       *circuitbreaker.CircuitBreaker
+	ctx                  context.Context // control-plane: logging survives trips and per-message context cancellation
 }
 
 // NewDemux creates worker shards for by-partition-key nexus.WorkItem fan-out
-func NewDemux[T any](demuxConfig config.DemuxConfig, processMessage nexus.ProcessMessage[T],
+func NewDemux[T any](ctx context.Context, demuxConfig config.DemuxConfig, processMessage nexus.ProcessMessage[T],
 	deadLetter *deadletter.DeadLetter[T], committer ports.CommitterPort[T],
 	circuitBreaker *circuitbreaker.CircuitBreaker, guard chan struct{}, overflowGuard chan struct{},
 	logger nexus.Logger, awaitRateLimit func(*nexus.Message[T])) *Demux[T] {
@@ -60,9 +65,12 @@ func NewDemux[T any](demuxConfig config.DemuxConfig, processMessage nexus.Proces
 	}
 
 	return &Demux[T]{
-		workerShards:   workerShards,
-		concurrentKeys: demuxConfig.ConcurrentKeys,
-		awaitRateLimit: awaitRateLimit,
+		workerShards:         workerShards,
+		concurrentKeys:       demuxConfig.ConcurrentKeys,
+		awaitRateLimit:       awaitRateLimit,
+		acquireWorkerTimeout: demuxConfig.AcquireWorkerTimeoutCircuitBreaker,
+		circuitBreaker:       circuitBreaker,
+		ctx:                  ctx,
 	}
 }
 
@@ -105,6 +113,30 @@ retrySend: // goto preferred over wrapping loop; retry is rare and label makes i
 			// in the fall-through/return, so it won't be able to acquire the lock to
 			// do this: yield to let this run (rare edge case)
 			workerShard.mu.Unlock()
+
+			if workerShard.done.Load() {
+				// a tripped circuit breaker ends the retry loop, message will
+				// be redelivered to another consumer instance after rebalance
+				if !usedOverflow {
+					<-worker.guard
+				} else {
+					<-worker.overflowGuard
+				}
+				const stalledWorkerExit = "worker stall: exiting without processing partition: %d, offset: %d"
+				message := workItem.Message
+				exitMessage := fmt.Sprintf(stalledWorkerExit, message.Partition, message.Offset)
+				worker.logger.Warn(c.ctx, exitMessage)
+				return
+			}
+
+			if time.Since(workItem.Metrics.ReadTime) > c.acquireWorkerTimeout {
+				// handle poison message locking pipeline indefinitely
+				const stalledWorkerTimeout = "worker stall: message undeliverable within %s (partition: %d, offset: %d)"
+				message := workItem.Message
+				err := fmt.Errorf(stalledWorkerTimeout, c.acquireWorkerTimeout, message.Partition, message.Offset)
+				c.circuitBreaker.TriggerEmergencyShutdown(err)
+			}
+
 			time.Sleep(retrySpinDelay)
 			goto retrySend
 		}

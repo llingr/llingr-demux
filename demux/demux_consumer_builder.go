@@ -202,7 +202,7 @@ func (b *ConsumerBuilder[T]) Build(brokerPort nexus.BrokerPort[T]) nexus.Adapted
 	guard := make(chan struct{}, b.demuxConfig.ConcurrentKeys)
 
 	// demux: fan-out to per-key workers
-	pipelineDemux := pipeline.NewDemux[T](*b.demuxConfig, b.processMessage, deadLetterWriter,
+	pipelineDemux := pipeline.NewDemux[T](b.ctx, *b.demuxConfig, b.processMessage, deadLetterWriter,
 		offsetCommitter, circuitBreaker, guard, b.overflowGuard, b.logger, b.rateLimiter.Await)
 
 	// processor: envelope extraction → worker dispatch
