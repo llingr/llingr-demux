@@ -22,6 +22,8 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+      - name: go.mod and go.sum are tidy
+        run: go mod tidy -diff
       - run: go build ./...
       - run: go vet ./...
 
@@ -42,8 +44,10 @@ jobs:
           cache: true
       - name: Unit tests
         run: go test -race -coverprofile=coverage.out ./demux/...
+      # -count=1: without coverage flags Go caches this run and setup-go restores the
+      # cache, so these timing-sensitive tests would replay an old pass instead of running
       - name: Integration tests
-        run: go test -race ./tests/...
+        run: go test -race -count=1 ./tests/...
       - name: Coverage summary
         run: go tool cover -func=coverage.out | tail -5
       - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
