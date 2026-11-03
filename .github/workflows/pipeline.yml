@@ -1,6 +1,9 @@
 name: Pipeline
 # Distinguish push vs PR runs at a glance in the Actions list.
-run-name: "Pipeline (${{ github.event_name == 'pull_request' && format('PR #{0}', github.event.pull_request.number) || format('push {0}', github.ref_name) }})"
+run-name: >-
+  Pipeline (${{ github.event_name == 'pull_request'
+  && format('PR #{0}', github.event.pull_request.number)
+  || format('push {0}', github.ref_name) }})
 
 # Single entry point for CI. Each check still lives in its own reusable
 # workflow file (lint.yml, ci.yml, ...); calling them from here collapses the

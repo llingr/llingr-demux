@@ -69,7 +69,9 @@ jobs:
       # already lives in GitHub's store (gh attestation verify); attaching it
       # makes the provenance discoverable and verifiable next to the tarball.
       - name: Attach provenance bundle
-        run: cp "${{ steps.attest.outputs.bundle-path }}" "llingr-demux_${GITHUB_REF_NAME}.tar.gz.sigstore"
+        run: >
+          cp "${{ steps.attest.outputs.bundle-path }}"
+          "llingr-demux_${GITHUB_REF_NAME}.tar.gz.sigstore"
 
       - name: Attest SBOM
         uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0

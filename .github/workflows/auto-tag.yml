@@ -1,0 +1,61 @@
+name: Auto Tag
+
+on:
+  push:
+    branches:
+      - main
+
+permissions: {}
+
+# Serialise runs so two quick merges cannot compute the same next version.
+concurrency:
+  group: auto-tag
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    # Computes the next version from conventional commit subjects since the
+    # last v* tag (feat -> minor, anything else -> patch) and pushes the tag,
+    # which fires release.yml. Major bumps are manual: a new Go major changes
+    # the module path (/v2). The push uses a PAT because tags pushed with the
+    # workflow's own token do not trigger other workflows.
+    name: push version tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Compute and push next tag
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          set -eu
+          last=$(git describe --tags --abbrev=0 --match 'v*')
+          if [ "$(git rev-list -n1 "$last")" = "$GITHUB_SHA" ]; then
+            echo "no commits since $last; nothing to tag"
+            exit 0
+          fi
+          subjects=$(git log --format=%s "$last..$GITHUB_SHA")
+          if echo "$subjects" | grep -qE '^[a-z]+(\(.+\))?!:|BREAKING CHANGE'; then
+            echo "breaking change detected: major bumps are manual in Go (module path changes)"
+            exit 1
+          fi
+          bump="patch"
+          echo "$subjects" | grep -qE '^feat(\(.+\))?:' && bump=minor
+          version="${last#v}"
+          maj="${version%%.*}"; rest="${version#*.}"
+          min="${rest%%.*}"; pat="${rest#*.}"
+          case "$bump" in
+            minor) min=$((min + 1)); pat=0 ;;
+            patch) pat=$((pat + 1)) ;;
+          esac
+          next="v${maj}.${min}.${pat}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$next" -m "$next" "$GITHUB_SHA"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$next"
+          echo "tagged $next (previous: $last, bump: $bump)"
